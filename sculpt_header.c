@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include "cast.h"
+#include "sculpt.h"
 
 static sc_headers *_create_header(const char *header, sc_headers *next) {
     // Allocate memory for the new header

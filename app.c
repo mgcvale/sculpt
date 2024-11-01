@@ -9,7 +9,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
-#include "cast.h"
+#include "sculpt.h"
 
 #define PORT 8000
 #define BACKLOG 128
@@ -27,14 +27,14 @@ int main() {
     }
     
     error = sc_conn_listen(mgr);
-    if (error != CST_OK) {
+    if (error != SC_OK) {
         fprintf(stderr, "Error on listen: %d", error);
         sc_conn_finish(mgr);
         exit(EXIT_FAILURE);
     }
 
     int rc = sc_conn_epoll_init(mgr);
-    if (rc != CST_OK) {
+    if (rc != SC_OK) {
         fprintf(stderr, "ERror initializing epoll: %d", rc);
         sc_conn_finish(mgr);
         exit(EXIT_FAILURE);
