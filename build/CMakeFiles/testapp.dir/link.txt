@@ -1,1 +1,0 @@
-/usr/bin/cc CMakeFiles/testapp.dir/sculpt_util.c.o CMakeFiles/testapp.dir/sculpt_header.c.o CMakeFiles/testapp.dir/sculpt_conn.c.o CMakeFiles/testapp.dir/app.c.o -o testapp

@@ -4,6 +4,7 @@
 #include <netdb.h>
 #include <stdbool.h>
 #include <errno.h>
+#include <time.h>
 
 #include <sys/types.h>
 #include <unistd.h>
@@ -12,7 +13,6 @@
 #include <netinet/in.h>
 
 #include "sculpt.h"
-
 
 sc_addr_info sc_addr_create(int sin_family, int port) {
     sc_addr_info addr_mgr;
@@ -23,7 +23,7 @@ sc_addr_info sc_addr_create(int sin_family, int port) {
     return addr_mgr;
 }
 
-sc_conn_mgr *sc_conn_create(sc_addr_info addr_mgr, int *err) {
+sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
     *err = SC_OK;
     sc_conn_mgr *mgr = malloc(sizeof(sc_conn_mgr));
     if (mgr == NULL) {
@@ -68,15 +68,15 @@ sc_conn_mgr *sc_conn_create(sc_addr_info addr_mgr, int *err) {
     return NULL;
 }
 
-void sc_conn_set_backlog(sc_conn_mgr *mgr, int backlog) {
+void sc_mgr_set_backlog(sc_conn_mgr *mgr, int backlog) {
     mgr->backlog = backlog;
 }
 
-void sc_conn_set_epoll_maxevents(sc_conn_mgr *mgr, int maxevents) {
+void sc_mgr_set_epoll_maxevents(sc_conn_mgr *mgr, int maxevents) {
     mgr->max_events = maxevents;
 }
 
-int sc_conn_listen(sc_conn_mgr *mgr) {
+int sc_mgr_listen(sc_conn_mgr *mgr) {
     if (listen(mgr->fd, mgr->backlog) < 0) {
         perror("Error: error in listen()");
         return SC_SOCKET_LISTEN_ERR;
@@ -97,7 +97,7 @@ int sc_conn_listen(sc_conn_mgr *mgr) {
     return SC_OK;
 }
 
-void sc_conn_finish(sc_conn_mgr *mgr) {
+void sc_mgr_finish(sc_conn_mgr *mgr) {
     close(mgr->fd);
     if (mgr->epoll_fd != -1) {
         close(mgr->epoll_fd);
@@ -108,7 +108,7 @@ void sc_conn_finish(sc_conn_mgr *mgr) {
     free(mgr);
 }
 
-int sc_conn_epoll_init(sc_conn_mgr *mgr) {
+int sc_mgr_epoll_init(sc_conn_mgr *mgr) {
     mgr->epoll_fd = epoll_create1(0);
     if (mgr->epoll_fd == -1) {
         return SC_EPOLL_CREATION_ERR;
@@ -130,54 +130,94 @@ int sc_conn_epoll_init(sc_conn_mgr *mgr) {
     return SC_OK;
 }
 
-int sc_conn_poll(sc_conn_mgr *mgr) {
-    int n = epoll_wait(mgr->epoll_fd, mgr->events, mgr->max_events, -1);
-    if (n == -1) {
+int sc_mgr_poll(sc_conn_mgr *mgr) {
+    // always cleanup connections
+    sc_mgr_conns_cleanup(mgr);
+
+    int n;
+    if ((n = epoll_wait(mgr->epoll_fd, mgr->events, mgr->max_events, -1)) == -1) {
+        perror("epoll_wait failed");
         return SC_EPOLL_WAIT_ERR;
     }
 
     for (int i = 0; i < n; i++) {
         if (mgr->events[i].data.fd == mgr->fd) {
-            // New connection
+            fprintf(stdout, "Creating new connection\n");
             socklen_t addr_len = sizeof(mgr->addr_info._sock_addr);
-            int client_fd = accept(mgr->fd,
+
+            // new connection
+            if (mgr->conn_count >= mgr->max_conn_count) {
+                perror("No avaliable connections found! Sending empty response");
+                int client_fd = accept(mgr->fd, (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
+                if (client_fd != -1) close(client_fd);
+                continue;
+            }
+
+            // try to find an unused connection
+            sc_conn *conn = sc_mgr_conn_get_free(mgr);
+            if (!conn) {
+                perror("Malloc error on sc_mgr_conn_get_free()\n");
+                continue;
+            }
+
+            // valid connection was found, so we accept the request
+            conn->fd = accept(mgr->fd,
                 (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
-            
-            if (client_fd == -1) {
+ 
+            if (conn->fd == -1) {
+                perror("Error on Accept");
+                sc_mgr_conn_release(mgr, conn);
                 if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                    fprintf(stderr, "Accept error: %d\n", errno);
+                    fprintf(stderr, "Critical: Accept error: %d\n", errno);
                     return SC_ACCEPT_ERR;
                 }
                 continue;
             }
 
-            // Set connection as non-blocking
-            int flags = fcntl(client_fd, F_GETFL, 0);
-            if (flags != -1) {
-                fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
-            }
+            // set connection as non-blocking
+            if (fcntl(conn->fd, F_SETFL, fcntl(conn->fd, F_GETFL) | O_NONBLOCK) == -1) {
+                perror("Error setting non-blocking mode");
+                sc_mgr_conn_release(mgr, conn);
+                close(conn->fd);
+                continue;
+            }  
 
             struct epoll_event event;
+
+            // add the event to epoll
             event.events = EPOLLIN | EPOLLET;  // set as edge triggered
-            event.data.fd = client_fd;
-            epoll_ctl(mgr->epoll_fd, EPOLL_CTL_ADD, client_fd, &event);
+            event.data.ptr = conn;
+            if (epoll_ctl(mgr->epoll_fd, EPOLL_CTL_ADD, conn->fd, &event) == -1) {
+                perror("Failed to add connection to epoll");
+                sc_mgr_conn_release(mgr, conn);
+                close(conn->fd);
+                continue;
+            }
+            fprintf(stdout, "Connection successfully established\n");
         } else {
-            int client_fd = mgr->events[i].data.fd;
+            // existing connection handling
+            fprintf(stdout, "Request on existing connection\n");
+            sc_conn *conn = mgr->events[i].data.ptr;
+            fprintf(stdout, "Gathered connection data: fd: %d, last_active: %lo, creation time: %lo, state: %d\n", conn->fd, conn->last_active, conn->creation_time, conn->state);
+
             char buf[1024] = {0};
+            size_t valread;
 
             if (mgr->events[i].events & EPOLLIN) {
-                size_t valread = read(client_fd, buf, sizeof(buf) - 1);
+                conn->last_active = time(NULL);
+                valread = read(conn->fd, buf, sizeof(buf) - 1);
+
                 if (valread > 0) {
                     buf[valread] = '\0';
-                    printf("Request: %s\n", buf);
+                    fprintf(stdout, "Request: %s\n", buf);
 
-                    // Determine connection persistence
+                    // determine connection persistence
                     int keep_alive = 1;
                     if (strstr(buf, "Connection: close")) {
                         keep_alive = 0;
                     }
 
-                    // Prepare response
+                    // prepare response
                     const char *hello = "Hello, World!\n";
                     char msg[1024];
                     char headers[256];
@@ -188,25 +228,36 @@ int sc_conn_poll(sc_conn_mgr *mgr) {
                     );
                     snprintf(msg, sizeof(msg), "HTTP/1.1 200 OK\r\n%s\r\n%s", headers, hello);
 
-                    send(client_fd, msg, strlen(msg), 0);
-                    printf("Sent response\n");
+                    if (send(conn->fd, msg, strlen(msg), 0) == -1) {
+                        perror("Error sending response");
+                    } else {
+                        fprintf(stdout, "Sent response\n");
+                    }
 
-                    // Only close if explicitly requested
+                    // close if explicitly requested
                     if (!keep_alive) {
-                        close(client_fd);
-                        epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, client_fd, NULL);
+                        fprintf(stdout, "Connection close requested");
+                        sc_mgr_conn_release(mgr, conn);
+                        close(conn->fd);
+                        epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
                     }
                 } else if (valread == 0) {
-                    // Connection closed by client
-                    close(client_fd);
-                    epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, client_fd, NULL);
+                    // connection closed by client
+                    fprintf(stdout, "Connection closed by client");
+                    sc_mgr_conn_release(mgr, conn);
+                    close(conn->fd);
+                    epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
                 }
+            } else {
+                perror("Error reading from client");
             }
 
-            // Only close on actual errors
-            if (mgr->events[i].events & (EPOLLERR)) {
-                close(client_fd);
-                epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, client_fd, NULL);
+           // handle errors with the epoll event
+            if (mgr->events[i].events & EPOLLERR) {
+                perror("Error with epoll, closing connection...");
+                sc_mgr_conn_release(mgr, conn);
+                close(conn->fd);
+                epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
             }
         }
     }
@@ -214,7 +265,81 @@ int sc_conn_poll(sc_conn_mgr *mgr) {
     return SC_OK;
 }
 
-int sc_conn_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int)) {
+int sc_mgr_pool_init(sc_conn_mgr *mgr, int max_conns) {
+    mgr->max_conn_count = max_conns;
+    mgr->conn_count = 0;
+
+    mgr->conn_pool = calloc(max_conns, sizeof(sc_conn));
+    if (mgr->conn_pool == NULL) {
+        return SC_MALLOC_ERR;
+    }
+
+    mgr->free_conns = &mgr->conn_pool[0]; // free conns will be the same as con poolat the start
+    // link list until max_conns - 1 to avoid segfault
+    for(int i = 0; i < max_conns - 1; i++) {
+        mgr->conn_pool[i].next = &mgr->conn_pool[i + 1];
+        mgr->conn_pool[i].state = CONN_IDLE;
+    }
+    mgr->conn_pool[max_conns - 1].next = NULL;
+    mgr->conn_pool[max_conns - 1].state = CONN_IDLE;
+
+    mgr->conn_timeout = SC_DEFAULT_CONN_TIMEOUT;
+    mgr->conn_max_age = SC_DEFAULT_CONN_MAX_AGE;
+
+    return SC_OK;
+}
+
+sc_conn *sc_mgr_conn_get_free(sc_conn_mgr *mgr) {
+    if (!mgr->free_conns) { // no free connections
+        return NULL;
+    }
+
+    // pop first free conn from list
+    sc_conn *conn = mgr->free_conns;
+    mgr->free_conns = mgr->free_conns->next;
+
+    // set flags n stuff
+    conn->state = CONN_ACTIVE;
+    conn->last_active = time(NULL);
+    conn->creation_time = conn->last_active;
+
+    mgr->conn_count++;
+    
+    return conn;
+}
+
+void sc_mgr_conn_release(sc_conn_mgr *mgr, sc_conn *conn) {
+    if (!conn) return;
+
+    // reset the connection
+    conn->state = CONN_CLOSING;
+    conn->last_active = time(NULL);
+
+    // add connection back to free connection stack
+    conn->next = mgr->free_conns;
+    mgr->free_conns = conn;
+    
+    mgr->conn_count--;
+}
+
+void sc_mgr_conns_cleanup(sc_conn_mgr *mgr) {
+    time_t now = time(NULL);
+
+    for (size_t i = 0; i < mgr->max_conn_count; i++) {
+        sc_conn *conn = &mgr->conn_pool[i];
+        
+        // check time limits
+        if ((CONN_ACTIVE == conn->state) &&
+        (now - conn->last_active > mgr->conn_timeout || now - conn->creation_time > mgr->conn_max_age)) {
+            // force close the fd
+            close(conn->fd);
+            epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+            sc_mgr_conn_release(mgr, conn);
+        }
+    }
+}
+
+int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int)) {
     mgr->endpoints = _endpoint_add(mgr->endpoints, endpoint, false, f);
     if (mgr->endpoints == NULL) {
        return SC_MALLOC_ERR;
@@ -222,7 +347,7 @@ int sc_conn_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int)) {
     return SC_OK;
 }
 
-int sc_conn_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int)) {
+int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int)) {
     mgr->endpoints = _endpoint_add(mgr->endpoints, endpoint, true, f);
     if (mgr->endpoints == NULL) {
         return SC_MALLOC_ERR;

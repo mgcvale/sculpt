@@ -26,11 +26,15 @@
 #define SC_EPOLL_CTL_ERR -8
 #define SC_EPOLL_WAIT_ERR -9
 #define SC_ACCEPT_ERR -10
+
 #define SC_DEFAULT_BACKLOG 128
 #define SC_DEFAULT_EPOLL_MAXEVENTS 12
 #define HOST_BUF_LEN NI_MAXHOST
 #define SERV_BUF_LEN NI_MAXSERV
+#define SC_DEFAULT_CONN_TIMEOUT 60
+#define SC_DEFAULT_CONN_MAX_AGE 300
 #define SC_ENDPOINT_LEN 256
+#define TEST 2
 
 // utils
 
@@ -84,7 +88,7 @@ typedef struct _sc_addr_info {
 typedef struct sc_conn {
     int fd;
     time_t last_active;         // when connection was last used
-    time_t connection_time;     // when connection was opened
+    time_t creation_time;     // when connection was created
     enum {
         CONN_IDLE,
         CONN_ACTIVE,
@@ -96,29 +100,45 @@ typedef struct sc_conn {
 typedef struct _sc_conn_mgr {
     sc_addr_info addr_info;         
     int fd;                         // server file descriptor
-    int backlog;
-    char host_buf[HOST_BUF_LEN];    
-    char service_buf[SERV_BUF_LEN]; 
+    int backlog;                    // server backlog count
+    char host_buf[HOST_BUF_LEN];    // hostname buffer
+    char service_buf[SERV_BUF_LEN]; // service buffer
 
-    // Connection pool management
-    int epoll_fd;
-    size_t max_events;
-    struct epoll_event epoll_event;
+    // Connection pool management  
+    sc_conn *conn_pool;             // main connection pool
+    sc_conn *free_conns;            // free connection pool
+    int max_conn_count;             // max connection count
+    int conn_count;         // current connection count
+    time_t conn_timeout;            // max connection idle time before closing
+    time_t conn_max_age;            // max connection lifetime
+
+    // epoll
+    int epoll_fd;       // epoll file descriptor
     struct epoll_event *events;
-    struct _endpoint_list *endpoints;
-    bool listening;
+    size_t max_events;              // max number of epoll events
+    struct epoll_event epoll_event; // server epoll event
+
+    // misc
+    struct _endpoint_list *endpoints; //linked list of endpoints
+    bool listening;                 // flag to check listening status
 } sc_conn_mgr;
 
 sc_addr_info sc_addr_create(int sin_family, int port);
-sc_conn_mgr *sc_conn_create(sc_addr_info mgr, int *err);
-int sc_conn_listen(sc_conn_mgr *mgr);
-void sc_conn_set_backlog(sc_conn_mgr *mgr, int backlog);
-void sc_conn_set_epoll_maxevents(sc_conn_mgr *mgr, int maxevents);
-void sc_conn_finish(sc_conn_mgr *mgr);
+sc_conn_mgr *sc_mgr_create(sc_addr_info mgr, int *err);
+int sc_mgr_listen(sc_conn_mgr *mgr);
+void sc_mgr_set_backlog(sc_conn_mgr *mgr, int backlog);
+void sc_mgr_set_epoll_maxevents(sc_conn_mgr *mgr, int maxevents);
+void sc_mgr_finish(sc_conn_mgr *mgr);
 
-int sc_conn_epoll_init(sc_conn_mgr *mgr);
-int sc_conn_poll(sc_conn_mgr *mgr);
-int sc_conn_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int));
-int sc_conn_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int));
+int sc_mgr_pool_init(sc_conn_mgr *mgr, int max_conn);
+sc_conn *sc_mgr_conn_get_free(sc_conn_mgr *mgr);
+
+void sc_mgr_conn_release(sc_conn_mgr *mgr, sc_conn *conn);
+void sc_mgr_conns_cleanup(sc_conn_mgr *mgr);
+
+int sc_mgr_epoll_init(sc_conn_mgr *mgr);
+int sc_mgr_poll(sc_conn_mgr *mgr);
+int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int));
+int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int));
 
 #endif // SCULPT_H
