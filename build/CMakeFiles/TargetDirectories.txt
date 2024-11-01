@@ -1,0 +1,7 @@
+/home/mgcv/projects/cast/build/CMakeFiles/testapp.dir
+/home/mgcv/projects/cast/build/CMakeFiles/edit_cache.dir
+/home/mgcv/projects/cast/build/CMakeFiles/rebuild_cache.dir
+/home/mgcv/projects/cast/build/CMakeFiles/list_install_components.dir
+/home/mgcv/projects/cast/build/CMakeFiles/install.dir
+/home/mgcv/projects/cast/build/CMakeFiles/install/local.dir
+/home/mgcv/projects/cast/build/CMakeFiles/install/strip.dir
