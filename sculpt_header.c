@@ -2,9 +2,9 @@
 #include <stdlib.h>
 #include "cast.h"
 
-static cst_headers *_create_header(const char *header, cst_headers *next) {
+static sc_headers *_create_header(const char *header, sc_headers *next) {
     // Allocate memory for the new header
-    cst_headers *headers = malloc(sizeof(cst_headers));
+    sc_headers *headers = malloc(sizeof(sc_headers));
     if (headers == NULL) {
         return NULL; // Handle memory allocation failure
     }
@@ -16,13 +16,13 @@ static cst_headers *_create_header(const char *header, cst_headers *next) {
     return headers;
 }
 
-cst_headers *cst_header_append(const char *header, cst_headers *list) {
+sc_headers *sc_header_append(const char *header, sc_headers *list) {
     return _create_header(header, list);
 }
 
-void cst_headers_free(cst_headers *headers) {
+void sc_headers_free(sc_headers *headers) {
     while(headers) {
-        cst_headers *next = headers->next;
+        sc_headers *next = headers->next;
         free((char *) headers->header);
         free(headers);
         headers = next;

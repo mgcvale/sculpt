@@ -14,15 +14,8 @@
 #include "cast.h"
 
 
-const char *template = "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/html\r\n"
-        "Content-Length: %d\r\n"
-        "Connection: close\r\n"
-        "\r\n"
-        "%s";
-
-cst_addr_info cst_addr_create(int sin_family, int port) {
-    cst_addr_info addr_mgr;
+sc_addr_info sc_addr_create(int sin_family, int port) {
+    sc_addr_info addr_mgr;
     addr_mgr._sock_addr.sin_family = sin_family;
     addr_mgr._sock_addr.sin_port = htons(port);
     addr_mgr._sock_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -30,11 +23,11 @@ cst_addr_info cst_addr_create(int sin_family, int port) {
     return addr_mgr;
 }
 
-cst_conn_mgr *cst_conn_create(cst_addr_info addr_mgr, int *err) {
+sc_conn_mgr *sc_conn_create(sc_addr_info addr_mgr, int *err) {
     *err = CST_OK;
-    cst_conn_mgr *mgr = malloc(sizeof(cst_conn_mgr));
+    sc_conn_mgr *mgr = malloc(sizeof(sc_conn_mgr));
     if (mgr == NULL) {
-        perror("Error: memory allocation for cst_conn_mgr");
+        perror("Error: memory allocation for sc_conn_mgr");
         *err = CST_MALLOC_ERR;
         return NULL;
     }
@@ -44,6 +37,7 @@ cst_conn_mgr *cst_conn_create(cst_addr_info addr_mgr, int *err) {
     mgr->max_events = CST_DEFAULT_EPOLL_MAXEVENTS;
     mgr->listening = false;
     mgr->epoll_fd = -1;
+    mgr->endpoints = NULL;
 
     mgr->fd = socket(AF_INET, SOCK_STREAM, 0);
     if (mgr->fd < 0) {
@@ -74,15 +68,15 @@ cst_conn_mgr *cst_conn_create(cst_addr_info addr_mgr, int *err) {
     return NULL;
 }
 
-void cst_conn_set_backlog(cst_conn_mgr *mgr, int backlog) {
+void sc_conn_set_backlog(sc_conn_mgr *mgr, int backlog) {
     mgr->backlog = backlog;
 }
 
-void cst_conn_set_epoll_maxevents(cst_conn_mgr *mgr, int maxevents) {
+void sc_conn_set_epoll_maxevents(sc_conn_mgr *mgr, int maxevents) {
     mgr->max_events = maxevents;
 }
 
-int cst_conn_listen(cst_conn_mgr *mgr) {
+int sc_conn_listen(sc_conn_mgr *mgr) {
     if (listen(mgr->fd, mgr->backlog) < 0) {
         perror("Error: error in listen()");
         return CST_SOCKET_LISTEN_ERR;
@@ -103,7 +97,7 @@ int cst_conn_listen(cst_conn_mgr *mgr) {
     return CST_OK;
 }
 
-void cst_conn_finish(cst_conn_mgr *mgr) {
+void sc_conn_finish(sc_conn_mgr *mgr) {
     close(mgr->fd);
     if (mgr->epoll_fd != -1) {
         close(mgr->epoll_fd);
@@ -114,7 +108,7 @@ void cst_conn_finish(cst_conn_mgr *mgr) {
     free(mgr);
 }
 
-int cst_conn_epoll_init(cst_conn_mgr *mgr) {
+int sc_conn_epoll_init(sc_conn_mgr *mgr) {
     mgr->epoll_fd = epoll_create1(0);
     if (mgr->epoll_fd == -1) {
         return CST_EPOLL_CREATION_ERR;
@@ -136,23 +130,18 @@ int cst_conn_epoll_init(cst_conn_mgr *mgr) {
     return CST_OK;
 }
 
-int cst_conn_poll(cst_conn_mgr *mgr) {
-    // wait for new events from epoll
-    int n = epoll_wait(mgr->epoll_fd, mgr->events, mgr->max_events, -1); // -1 for indeterminate timeout
+int sc_conn_poll(sc_conn_mgr *mgr) {
+    int n = epoll_wait(mgr->epoll_fd, mgr->events, mgr->max_events, -1);
     if (n == -1) {
         return CST_EPOLL_WAIT_ERR;
     }
-        
+
     for (int i = 0; i < n; i++) {
         if (mgr->events[i].data.fd == mgr->fd) {
-            // This is a new connection, so handle 
-    
-            int a = T;
-
-            // accept the new connection first
+            // New connection
             socklen_t addr_len = sizeof(mgr->addr_info._sock_addr);
             int client_fd = accept(mgr->fd,
-                    (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
+                (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
             
             if (client_fd == -1) {
                 if (errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -162,48 +151,81 @@ int cst_conn_poll(cst_conn_mgr *mgr) {
                 continue;
             }
 
-            // set the conenction as non-blocking
+            // Set connection as non-blocking
             int flags = fcntl(client_fd, F_GETFL, 0);
             if (flags != -1) {
                 fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
             }
 
-            // add the new connection to the epoll monitoring system so it is notified when new requests arrive
             struct epoll_event event;
-            event.events = EPOLLIN;
+            event.events = EPOLLIN | EPOLLET;  // set as edge triggered
             event.data.fd = client_fd;
-            epoll_ctl(mgr->epoll_fd, EPOLL_CTL_ADD, client_fd, &event); //TODO: check if this returns error
-        } else { 
-            // This is not a new connection as it doesn' have the same file descriptor as the server's
-            // So we just pass the responsibility of it to the handler function (rn we will respond with hello world cuz thats yet to be implemented)
-            
+            epoll_ctl(mgr->epoll_fd, EPOLL_CTL_ADD, client_fd, &event);
+        } else {
             int client_fd = mgr->events[i].data.fd;
+            char buf[1024] = {0};
 
             if (mgr->events[i].events & EPOLLIN) {
-                // handle the meassage and the response
-                char buf[1024];
-                const char *hello = "Hello, World!\n";
-                char msg[1024];
-                snprintf(msg, sizeof(msg), template, strlen(hello), hello);
-                
-                // Read request
                 size_t valread = read(client_fd, buf, sizeof(buf) - 1);
                 if (valread > 0) {
                     buf[valread] = '\0';
                     printf("Request: %s\n", buf);
-                    
-                    // Send response
+
+                    // Determine connection persistence
+                    int keep_alive = 1;
+                    if (strstr(buf, "Connection: close")) {
+                        keep_alive = 0;
+                    }
+
+                    // Prepare response
+                    const char *hello = "Hello, World!\n";
+                    char msg[1024];
+                    char headers[256];
+                    snprintf(headers, sizeof(headers), 
+                        "Content-Length: %zu\r\n%s", 
+                        strlen(hello), 
+                        keep_alive ? "Connection: keep-alive\r\n" : "Connection: close\r\n"
+                    );
+                    snprintf(msg, sizeof(msg), "HTTP/1.1 200 OK\r\n%s\r\n%s", headers, hello);
+
                     send(client_fd, msg, strlen(msg), 0);
                     printf("Sent response\n");
+
+                    // Only close if explicitly requested
+                    if (!keep_alive) {
+                        close(client_fd);
+                        epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, client_fd, NULL);
+                    }
+                } else if (valread == 0) {
+                    // Connection closed by client
+                    close(client_fd);
+                    epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, client_fd, NULL);
                 }
             }
 
-            // when they disconnect, close their fd
-            if (mgr->events[i].events & (EPOLLERR | EPOLLHUP)) {
+            // Only close on actual errors
+            if (mgr->events[i].events & (EPOLLERR)) {
                 close(client_fd);
+                epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, client_fd, NULL);
             }
         }
     }
 
+    return CST_OK;
+}
+
+int sc_conn_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int)) {
+    mgr->endpoints = _endpoint_add(mgr->endpoints, endpoint, false, f);
+    if (mgr->endpoints == NULL) {
+       return CST_MALLOC_ERR;
+    }
+    return CST_OK;
+}
+
+int sc_conn_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int)) {
+    mgr->endpoints = _endpoint_add(mgr->endpoints, endpoint, true, f);
+    if (mgr->endpoints == NULL) {
+        return CST_MALLOC_ERR;
+    }
     return CST_OK;
 }
