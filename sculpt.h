@@ -26,6 +26,8 @@
 #define SC_EPOLL_CTL_ERR -8
 #define SC_EPOLL_WAIT_ERR -9
 #define SC_ACCEPT_ERR -10
+#define SC_BAD_ARGUMENTS_ERR -11
+#define SC_FCNTL_ERR -12
 
 #define SC_DEFAULT_BACKLOG 128
 #define SC_DEFAULT_EPOLL_MAXEVENTS 12
@@ -34,8 +36,6 @@
 #define SC_DEFAULT_CONN_TIMEOUT 60
 #define SC_DEFAULT_CONN_MAX_AGE 300
 #define SC_ENDPOINT_LEN 256
-#define TEST 2
-
 // utils
 
 /* Describes a string with len attribute. By nature, this string has a constant value.*/
@@ -137,7 +137,7 @@ void sc_mgr_conn_release(sc_conn_mgr *mgr, sc_conn *conn);
 void sc_mgr_conns_cleanup(sc_conn_mgr *mgr);
 
 int sc_mgr_epoll_init(sc_conn_mgr *mgr);
-int sc_mgr_poll(sc_conn_mgr *mgr);
+int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms);
 int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int));
 int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int));
 
