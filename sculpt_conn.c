@@ -22,101 +22,6 @@
         } \
     } while (0)
 
-
-sc_addr_info sc_addr_create(int sin_family, int port) {
-    sc_addr_info addr_mgr;
-    addr_mgr._sock_addr.sin_family = sin_family;
-    addr_mgr._sock_addr.sin_port = htons(port);
-    addr_mgr._sock_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr_mgr.port = port;
-    return addr_mgr;
-}
-
-sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
-    *err = SC_OK;
-    sc_conn_mgr *mgr = malloc(sizeof(sc_conn_mgr));
-    if (mgr == NULL) {
-        perror("Error: memory allocation for sc_conn_mgr");
-        *err = SC_MALLOC_ERR;
-        return NULL;
-    }
-
-    mgr->addr_info = addr_mgr;
-    mgr->backlog = SC_DEFAULT_BACKLOG;
-    mgr->max_events = SC_DEFAULT_EPOLL_MAXEVENTS;
-    mgr->listening = false;
-    mgr->epoll_fd = -1;
-    mgr->endpoints = NULL;
-
-    mgr->fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (mgr->fd < 0) {
-        perror("Error: error creating socket for conn_mgr");
-        free(mgr);
-        *err = SC_SOCKET_CREATION_ERR;
-        return NULL;
-    }
-    
-    int opt = 1;
-    if (setsockopt(mgr->fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(int)) < 0) {
-        perror("Error: failed to set socket options");
-        *err = SC_SOCKET_SETOPT_ERR;
-        goto error;
-    }
-
-    if (bind(mgr->fd, (struct sockaddr *)&mgr->addr_info, sizeof(mgr->addr_info))) {
-        perror("Error: Failed to bind server to the address");
-        *err = SC_SOCKET_BIND_ERR;
-        goto error;
-    }
-
-    return mgr;
-
-    error:
-    close(mgr->fd);
-    free(mgr);
-    return NULL;
-}
-
-void sc_mgr_set_backlog(sc_conn_mgr *mgr, int backlog) {
-    mgr->backlog = backlog;
-}
-
-void sc_mgr_set_epoll_maxevents(sc_conn_mgr *mgr, int maxevents) {
-    mgr->max_events = maxevents;
-}
-
-int sc_mgr_listen(sc_conn_mgr *mgr) {
-    if (listen(mgr->fd, mgr->backlog) < 0) {
-        perror("Error: error in listen()");
-        return SC_SOCKET_LISTEN_ERR;
-    }
-
-    int rc = getnameinfo((struct sockaddr *)&mgr->addr_info, sizeof(mgr->addr_info),
-                        mgr->host_buf, sizeof(mgr->host_buf),
-                        mgr->service_buf, sizeof(mgr->service_buf), 0);
-    if (rc != 0) {
-        fprintf(stderr, "Warning: %s\n", gai_strerror(rc));
-        fprintf(stderr, "Server is listening on unknown URL\n");
-        return SC_SOCKET_GETNAMEINFO_ERR;
-    }
-
-    printf("\nServer is listening on http://%s%s:%d\n", mgr->host_buf, mgr->service_buf, mgr->addr_info.port);
-
-    mgr->listening = true;
-    return SC_OK;
-}
-
-void sc_mgr_finish(sc_conn_mgr *mgr) {
-    close(mgr->fd);
-    if (mgr->epoll_fd != -1) {
-        close(mgr->epoll_fd);
-    }
-    if (mgr->events != NULL) {
-        free(mgr->events);
-    }
-    free(mgr);
-}
-
 int sc_mgr_epoll_init(sc_conn_mgr *mgr) {
     RETURN_ERROR_IF(!mgr, SC_BAD_ARGUMENTS_ERR, "NULL manager provided");
 
@@ -139,6 +44,79 @@ int sc_mgr_epoll_init(sc_conn_mgr *mgr) {
     RETURN_ERROR_IF(!mgr->events, SC_MALLOC_ERR, "Failed to allocate events array");return SC_OK;
 }
 
+static int create_new_connection(sc_conn_mgr *mgr) {
+    fprintf(stdout, "Creating new connection\n");
+    socklen_t addr_len = sizeof(mgr->addr_info._sock_addr);
+
+    // new connection, check capacity before proceeding
+    if (mgr->conn_count >= mgr->max_conn_count) {
+        perror("No avaliable connections found! Sending 503 response");
+        int client_fd = accept(mgr->fd, (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
+        if (client_fd != -1) {
+             static const char *msg = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 21\r\n\r\nServer at capacity\r\n";
+            send(client_fd, msg, strlen(msg), MSG_NOSIGNAL);
+            close(client_fd);
+        }
+        return SC_CONTINUE;
+    }
+
+    // try to find an unused connection
+    sc_conn *conn = sc_mgr_conn_get_free(mgr);
+    if (!conn) {
+        perror("Failed to find free connection on sc_mgr_conn_get_free()\n");
+        return SC_CONTINUE;
+    }
+
+    // valid connection was found, so we accept the request
+     conn->fd = accept(mgr->fd, (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
+
+    if (conn->fd == -1) {
+        perror("Error on Accept");
+        sc_mgr_conn_release(mgr, conn);
+        if (errno != EAGAIN && errno != EWOULDBLOCK) { // if the error is not because it would block or cuz it is unacailable, we don't return the function
+            fprintf(stderr, "Fatal: Accept error: %d\n", errno);
+            return SC_ACCEPT_ERR;
+        }
+        return SC_CONTINUE;
+    }
+
+    // set connection as non-blocking because we used accept instead of accept4
+    if (fcntl(conn->fd, F_SETFL, fcntl(conn->fd, F_GETFL) | O_NONBLOCK) == -1) {
+        perror("Error setting non-blocking mode");
+        sc_mgr_conn_release(mgr, conn);
+        close(conn->fd);
+        return SC_CONTINUE;
+    }  
+
+    struct epoll_event event = {
+        .events = EPOLLIN | EPOLLRDHUP | EPOLLONESHOT, // no edge triggered mode
+        .data.ptr = conn
+    };
+
+    // add the event to epoll 
+    if (epoll_ctl(mgr->epoll_fd, EPOLL_CTL_ADD, conn->fd, &event) == -1) {
+        perror("Failed to add connection to epoll");
+        sc_mgr_conn_release(mgr, conn);
+        close(conn->fd);
+        return SC_CONTINUE;
+    }
+    fprintf(stdout, "Connection successfully established\n");
+    return SC_OK;
+}
+
+static void return_500(sc_conn_mgr *mgr, sc_conn *conn) {
+     const char *http_response_500 = 
+        "HTTP/1.1 500 Internal Server Error\r\n"
+        "Content-Type: text/html; charset=UTF-8\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n";
+
+     send(conn->fd, http_response_500, strlen(http_response_500), 0);
+     close(conn->fd);
+     sc_mgr_conn_release(mgr, conn);                    
+     epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+}
+
 int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
     RETURN_ERROR_IF(!mgr, SC_BAD_ARGUMENTS_ERR, "The mgr pointer cant be null");
     sc_mgr_conns_cleanup(mgr);
@@ -148,10 +126,9 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
         if (errno == EINTR) return SC_OK;
         return SC_EPOLL_WAIT_ERR;
     }
+    printf("Connection quantity: %d\n", mgr->conn_count);
 
     for (int i = 0; i < n; i++) {
-
-    
        // handle errors with the epoll event
         if (mgr->events[i].events & EPOLLERR) {
             sc_conn *conn = mgr->events[i].data.ptr;
@@ -160,69 +137,14 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                 sc_mgr_conn_release(mgr, conn);
                 close(conn->fd);
                 epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-
             }
             continue;
         }
 
-
         if (mgr->events[i].data.fd == mgr->fd) {
-            fprintf(stdout, "Creating new connection\n");
-            socklen_t addr_len = sizeof(mgr->addr_info._sock_addr);
-
-            // new connection, check capacity before proceeding
-            if (mgr->conn_count >= mgr->max_conn_count) {
-                perror("No avaliable connections found! Sending 503 response");
-                int client_fd = accept(mgr->fd, (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
-                if (client_fd != -1) {
-                     static const char *msg = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 21\r\n\r\nServer at capacity\r\n";
-                    send(client_fd, msg, strlen(msg), MSG_NOSIGNAL);
-                    close(client_fd);
-                }
-                continue;
-            }
-
-            // try to find an unused connection
-            sc_conn *conn = sc_mgr_conn_get_free(mgr);
-            if (!conn) {
-                perror("Failed to find free connection on sc_mgr_conn_get_free()\n");
-                continue;
-            }
-
-            // valid connection was found, so we accept the request
-             conn->fd = accept(mgr->fd, (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
-
-            if (conn->fd == -1) {
-                perror("Error on Accept");
-                sc_mgr_conn_release(mgr, conn);
-                if (errno != EAGAIN && errno != EWOULDBLOCK) { // if the error is not because it would block or cuz it is unacailable, we don't return the function
-                    fprintf(stderr, "Fatal: Accept error: %d\n", errno);
-                    return SC_ACCEPT_ERR;
-                }
-                continue;
-            }
-
-            // set connection as non-blocking because we used accept instead of accept4
-            if (fcntl(conn->fd, F_SETFL, fcntl(conn->fd, F_GETFL) | O_NONBLOCK) == -1) {
-                perror("Error setting non-blocking mode");
-                sc_mgr_conn_release(mgr, conn);
-                close(conn->fd);
-                continue;
-            }  
-
-            struct epoll_event event = {
-                .events = EPOLLIN | EPOLLRDHUP | EPOLLONESHOT, // no edge triggered mode
-                .data.ptr = conn
-            };
-
-            // add the event to epoll 
-            if (epoll_ctl(mgr->epoll_fd, EPOLL_CTL_ADD, conn->fd, &event) == -1) {
-                perror("Failed to add connection to epoll");
-                sc_mgr_conn_release(mgr, conn);
-                close(conn->fd);
-                continue;
-            }
-            fprintf(stdout, "Connection successfully established\n");
+            int rc = create_new_connection(mgr);
+            if (rc == SC_CONTINUE) continue;
+            if (rc != SC_OK) return rc;
         } else {
             // existing connection handling
             fprintf(stdout, "Request on existing connection\n");
@@ -231,8 +153,6 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                 perror("Critical: Error gathering connection struct from epoll event");
                 continue;
             }
-            fprintf(stdout, "Gathered connection data: fd: %d, last_active: %lo, creation time: %lo, state: %d\n", conn->fd, conn->last_active, conn->creation_time, conn->state);
-            
             if (mgr->events[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
                 epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
                 close(conn->fd);
@@ -240,61 +160,104 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                 continue;
             }
 
-            char buf[1024] = {0};
+            char headers[HEADER_BUF_SIZE] = {0};
 
             if (mgr->events[i].events & EPOLLIN) {
+                bool keep_alive = false;
                 conn->last_active = time(NULL);
-                
-                // TODO: read in a loop until EAGAIN for better performance (less epoll_wait() calls)
-                ssize_t valread = read(conn->fd, buf, sizeof(buf) - 1); // because we are using LT mode, we can just read once
-
-                if (valread == -1) {
-                    if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                        epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+               
+                // parse the basic headers
+                char headers[HEADER_BUF_SIZE] = {'\0'};
+                size_t headers_len = 0;
+                char buf[1] = {0};
+                while (headers_len < HEADER_BUF_SIZE - 1) {
+                    ssize_t bytes_read = read(conn->fd, buf, 1);
+                    if (bytes_read >= 0) {     
+                        headers[headers_len] = buf[0];
+                        headers[headers_len + 1] = '\0';
+                        headers_len ++;
+                        if (strstr(headers, "\r\n\r\n")) {
+                            break; // stop if we got to the end of the headers
+                        }
+                    } else if (bytes_read == -1) {
+                         if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            // no more data to read, break out of loop
+                            break;
+                         }
+                         // else this was just an error
+                         printf("Error reading body from client\n");
+                         return_500(mgr, conn);
+                         return SC_OK;
+                    } else { // bytes_read == 0 (conn closed by client)
                         close(conn->fd);
-                        sc_mgr_conn_release(mgr, conn); 
+                        sc_mgr_conn_release(mgr, conn);
+                        return SC_OK;
                     }
-                    continue;
                 }
 
-                if (valread == 0) { // no data to read, just close the connection
-                    epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-                    close(conn->fd);
-                    sc_mgr_conn_release(mgr, conn);
-                    continue;
+                sc_http_msg http_msg;
+                char method_buf[METHOD_BUF_SIZE];
+                char uri_buf[URL_BUF_SIZE];
+                sscanf(headers, "%s %s", method_buf, uri_buf);
+                http_msg.method = sc_mk_str(method_buf);
+                http_msg.uri = sc_mk_str(uri_buf);
+                sc_str sc_headers = sc_mk_str(headers);
+
+                if (strstr(headers, "Connection: keep-alive")) {
+                    keep_alive = true;
                 }
 
-                // now we read data
-                buf[valread] = '\0';
-                int keep_alive = 1;
-                if (strstr(buf, "Connection: close")) {
-                    keep_alive = 0;
+                struct _endpoint_list *current = mgr->endpoints;
+                while (current) {
+                    if (current->soft) {
+                        // we call it even if just the prefix matches
+                        if (sc_strprefix(http_msg.uri, current->val)) {
+                            // the uri buffer starts with the prefix of the endpoint
+                            current->func(conn->fd, http_msg);
+                            goto end;
+                        }
+                    } else {
+                        printf("hard\n");
+                        if(sc_strcmp(current->val, http_msg.uri) == 0) {
+                            // the uri buffer is EQUAL to the endpoint
+                            current->func(conn->fd, http_msg);
+                            goto end;
+                        }
+                    }
+                    current = current->next;
                 }
-
-                // prepare default response
-                
-                const char *hello = "Hello, World!\n";
-                char msg[1024];
-                char headers[256];
-                snprintf(headers, sizeof(headers),
-                    "Content-length: %zu\r\n%s", strlen(hello),
-                    keep_alive ? "Connection: keep-alive\r\n" : "Connection: close\r\n"
-                );
-                snprintf(msg, sizeof(msg), "HTTP/1.1 200 OK\r\n%s\r\n%s", headers, hello);
-                
-                if (send(conn->fd, msg, strlen(msg), 0) == -1) {
+                // no valid enpoints were found, so we return 404
+                const char *http_response_404 = 
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/html; charset=UTF-8\r\n"
+                "Content-Length: 0\r\n"
+                "Connection: keep-alive\r\n" // this is 200 ok for testing purposes. Ignore.
+                "\r\n";
+                if (send(conn->fd, http_response_404, strlen(http_response_404), 0) == -1) {
                     perror("Error sending response");
-                } else {
-                    fprintf(stdout, "Sent response\n");
                 }
 
-                // check for keep alive
-                if (!keep_alive) {
-                    fprintf(stdout, "Connection close requested");
-                    sc_mgr_conn_release(mgr, conn);
-                    close(conn->fd);
-                    epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-                }
+                end:
+                    if (!keep_alive) {
+                        fprintf(stdout, "Connection close requested\n");
+                        close(conn->fd);
+                        sc_mgr_conn_release(mgr, conn);                    
+                        epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+                    } else {
+                        printf("Re-adding connection to epoll\n");
+                        // Re-add the connection to epoll for further requests
+                        struct epoll_event event = {
+                            .events = EPOLLIN | EPOLLRDHUP | EPOLLONESHOT,
+                            .data.ptr = conn
+                        };
+                        if (epoll_ctl(mgr->epoll_fd, EPOLL_CTL_MOD, conn->fd, &event) == -1) {
+                            perror("Failed to re-add connection to epoll");
+                            close(conn->fd);
+                            sc_mgr_conn_release(mgr, conn);
+                        }
+                    }
+
+                // all other responsibilities are passed to the handler, so no need to do anything else
             } else {
                 perror("Error reading from client");
             }
@@ -338,7 +301,7 @@ sc_conn *sc_mgr_conn_get_free(sc_conn_mgr *mgr) {
     // pop first free conn from list
     sc_conn *conn = mgr->free_conns;
     mgr->free_conns = mgr->free_conns->next;
-
+ 
     // set flags n stuff
     conn->state = CONN_ACTIVE;
     conn->last_active = time(NULL);
@@ -382,18 +345,19 @@ void sc_mgr_conns_cleanup(sc_conn_mgr *mgr) {
     }
 }
 
-int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int)) {
-    mgr->endpoints = _endpoint_add(mgr->endpoints, endpoint, false, f);
-    if (mgr->endpoints == NULL) {
-       return SC_MALLOC_ERR;
+void sc_mgr_conn_pool_destroy(sc_conn_mgr *mgr) {
+    // close all active connections from array
+    for (int i = 0; i < mgr->max_conn_count; i++) {
+        sc_conn *conn = &mgr->conn_pool[i];
+        if (conn->state == CONN_ACTIVE) {
+            close(conn->fd);
+        }
+        //free(conn);
     }
-    return SC_OK;
+    
+    // free pools
+    free(mgr->conn_pool);
+    mgr->conn_pool = NULL;
+    mgr->free_conns = NULL;
 }
 
-int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int)) {
-    mgr->endpoints = _endpoint_add(mgr->endpoints, endpoint, true, f);
-    if (mgr->endpoints == NULL) {
-        return SC_MALLOC_ERR;
-    }
-    return SC_OK;
-}

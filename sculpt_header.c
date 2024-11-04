@@ -1,5 +1,7 @@
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
+
 #include "sculpt.h"
 
 static sc_headers *_create_header(const char *header, sc_headers *next) {

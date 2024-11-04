@@ -15,7 +15,6 @@ sc_str sc_mk_str_n(const char *str, size_t len) {
     return sc_str;
 }
 
-
 int sc_strcmp(const sc_str str1, const sc_str str2) {
   size_t i;
   for (i = 0; i < str1.len && i < str2.len; i++) {
@@ -34,17 +33,11 @@ bool sc_strprefix(const sc_str str, const sc_str prefix) {
         return false; // false if str is shorter than prefix
     }
 
-    size_t i;
-    for (i = 0; i < prefix.len; i++) {
-        if (str.buf[i] != prefix.buf[i]) {
-            return false;
-        }
-    }
-    
-    return true;
+
+    return memcmp(str.buf, prefix.buf, prefix.len) == 0;
 }
 
-struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *endpoint, bool soft, void (*func)(int)) {
+struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *endpoint, bool soft, void (*func)(int, sc_http_msg)) {
     struct _endpoint_list *new = malloc(sizeof(struct _endpoint_list));
     if (new == NULL) {
         return NULL;
@@ -52,7 +45,8 @@ struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *en
 
     new->soft = soft;
     new->func = func;
-    sc_str val = sc_mk_str(endpoint);
+    sc_str val = sc_mk_str_n(endpoint, strlen(endpoint));
+    new->val = val;
     new->next = list;
     return new;
 }

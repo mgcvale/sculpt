@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <netdb.h>
+#include <sys/signal.h>
 
 #include <sys/types.h>
 #include <unistd.h>
@@ -13,6 +14,28 @@
 
 #define PORT 8000
 #define BACKLOG 128
+
+static bool s_exit_flag = false;
+
+static void signal_handler(int sig) {
+    signal(sig, signal_handler);
+    s_exit_flag = true;
+}
+
+void root_handler(int fd, sc_http_msg msg) {
+    const char *http_response_200 = 
+    "HTTP/1.1 200 OK\r\n"
+    "Content-Type: text/html; charset=UTF-8\r\n"
+    "Content-Length: 54\r\n"
+    "Connection: keep-alive\r\n"
+    "\r\n"
+    "<html><h1>Success!</h1><p>Body from handler</p></html>";
+    if (send(fd, http_response_200, strlen(http_response_200), 0) == -1) {
+        perror("Error sending response");
+    } else {
+        printf("Response sent successfully\n");
+    }
+}
 
 int main() {    
     // create and setup socket    
@@ -39,14 +62,19 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    rc = sc_mgr_pool_init(mgr, 1);
+    rc = sc_mgr_pool_init(mgr, 20);
     if (rc != SC_OK) {
         fprintf(stderr, "Error initializing connection pool: %d", rc);
         sc_mgr_finish(mgr);
         exit(EXIT_FAILURE);
     }
 
-    for (;;) {
+    sc_mgr_bind_hard(mgr, "/root", root_handler);
+    
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+
+    while (!s_exit_flag) {
         sc_mgr_poll(mgr, 1000);
     }
 

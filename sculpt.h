@@ -1,9 +1,7 @@
 #ifndef SCULPT_H
-#define SCLUPT_H
+#define SCULPT_H
 
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <netdb.h>
 #include <stdbool.h>
 
@@ -36,6 +34,11 @@
 #define SC_DEFAULT_CONN_TIMEOUT 60
 #define SC_DEFAULT_CONN_MAX_AGE 300
 #define SC_ENDPOINT_LEN 256
+#define HEADER_BUF_SIZE 1024
+#define METHOD_BUF_SIZE 16
+#define URL_BUF_SIZE 128
+
+#define SC_CONTINUE 1
 // utils
 
 /* Describes a string with len attribute. By nature, this string has a constant value.*/
@@ -55,17 +58,22 @@ int sc_strcmp(const sc_str str1, const sc_str str2);
 /* checks if the prefix is present in the string */
 bool sc_strprefix(const sc_str str, const sc_str prefix);
 
+/* describes the basic necessary info about an http message for virtually any rquest */ 
+typedef struct sc_http_msg {
+    sc_str uri;    
+    sc_str method;
+} sc_http_msg;
+
 
 /* describes a linked list of the set endpoints */
-
 struct _endpoint_list {
     sc_str val;
-    void (*func)(int);
+    void (*func)(int, sc_http_msg);
     bool soft;
     struct _endpoint_list *next;
 };
 
-struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *endpoint, bool soft, void (*func)(int));
+struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *endpoint, bool soft, void (*func)(int, sc_http_msg));
 
 // headers
 
@@ -131,6 +139,7 @@ void sc_mgr_set_epoll_maxevents(sc_conn_mgr *mgr, int maxevents);
 void sc_mgr_finish(sc_conn_mgr *mgr);
 
 int sc_mgr_pool_init(sc_conn_mgr *mgr, int max_conn);
+void sc_mgr_conn_pool_destroy(sc_conn_mgr *mgr);
 sc_conn *sc_mgr_conn_get_free(sc_conn_mgr *mgr);
 
 void sc_mgr_conn_release(sc_conn_mgr *mgr, sc_conn *conn);
@@ -138,7 +147,7 @@ void sc_mgr_conns_cleanup(sc_conn_mgr *mgr);
 
 int sc_mgr_epoll_init(sc_conn_mgr *mgr);
 int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms);
-int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int));
-int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int));
+int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg));
+int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg));
 
 #endif // SCULPT_H
