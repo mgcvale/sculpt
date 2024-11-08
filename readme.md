@@ -103,23 +103,29 @@ You may not use these conventions when creating functions that the user shall no
 
 Firstly, you should ALWAYS log your errors at least on the debug log level (as explained later). No exceptions here.
 For better logging, the sculpt framework uses a logging system, with different levels. Here are them, and a small exlpanation about each:
-- SC_LL_NONE: this Log Level (LL) doesn't log anything at all.
-- SC_LL_MINIMAL: This LL only logs the most important events with essential info, such as the URI's and methods of incoming requests, and critical errors.
-- SC_LL_NORMAL: This LL logs everything of the lower log levels, plus all semi-critical and other important errors. It also logs important events and information, such as if a request is from a new connection or from an already existing one.
-- SC_LL_DEBUG: This LL logs absolutely everything, including all errors, warnings and information about the server. This includes the number of connectoins after each epoll poll, the status of new and current connections, keep-alive or close requests, parsing results and more.
+- `SC_LL_NONE`: this Log Level (LL) doesn't log anything at all.
+- `SC_LL_MINIMAL`: This LL only logs the most important events with essential info, such as the URI's and methods of incoming requests, and critical errors.
+- `SC_LL_NORMAL`: This LL logs everything of the lower log levels, plus all semi-critical and other important errors. It also logs important events and information, such as if a request is from a new connection or from an already existing one.
+- `SC_LL_DEBUG`: This LL logs absolutely everything, including all errors, warnings and information about the server. This includes the number of connectoins after each epoll poll, the status of new and current connections, keep-alive or close requests, parsing results and more.
 
 When logging something new, you can use three functions:
-- sc_log: for logging everything that is not an error or warning
-- sc_error_log: for logging internal errors. It usess fprintf(stderr, format) under the hood, so use it as you would use fprintf(stderr).
-- sc_perror: for logging external errors with errno, as it uses perror() under the hood.
+- `sc_log`: for logging everything that is not an error or warning
+- `sc_error_log`: for logging internal errors. It usess fprintf(stderr, format) under the hood, so use it as you would use fprintf(stderr).
+- `sc_perror`: for logging external errors with errno, as it uses perror() under the hood.
 
 These functions take the following arguments:
-void sc_log(sc_conn_mgr *mgr, int ll, const char *format, ...);
-mgr: the connection manager for the running server. Used to get the current log level.
-ll: the log level that will be used for the logging action.
-format, ...: The formatted string to be logged.
-P.S.: The perror function doesn't support formatted output, so the sc_perror function also doesn't support it.
 
-The ll you pass to the function should be in what level you want to log it. If it is a very specific thing you only want to log when using LL_DEBUG, pass LL_DEBUG to it. If it is something essential, and you want it to be logged under LL_MINIMAL, LL_NORMAL and LL_DEBUG, pass LL_MINIMAL to it, and so on.
+`void sc_log(sc_conn_mgr *mgr, int ll, const char *format, ...);`
+- `mgr`: the connection manager for the running server. Used to get the current log level.
+- `ll`: the log level that will be used for the logging action.
+- `format`, `...`: The formatted string to be logged.
+- P.S.: The perror function doesn't support formatted output, so the sc_perror function also doesn't support it.
 
+The `ll` you pass to the function should be in what level you want to log it. If it is a very specific thing you only want to log when using `LL_DEBUG`, pass `LL_DEBUG` to it. If it is something essential, and you want it to be logged under `LL_MINIMAL`, `LL_NORMAL` and `LL_DEBUG`, pass `LL_MINIMAL` to it, and so on.
+
+##### Return codes
+
+- When making main functions that don't inherently return anything and are prone to errors, you should make them return an `int`, which will be the code for the error that may happen. If no error happens, you can return `SC_OK`, as defined in `sculpt.h`. There are lots of errors already defined in such header, but if you need a new one, just define it.
+- When making functions that return a pointer to something, you can just return `NULL` when errors happen. Make sure to log them!
+- When making functions that return a specific, non-pointer value, and that are prone to errors, you have two choices. If that thing is, say, related to the connection of the framework, you can just add it to the `sc_conn` struct, for example, and pass the struct by reference. If, however, the return value is not related to any structure, you can either pass it by reference, or pass the error code by reference.
 
