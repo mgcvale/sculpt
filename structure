@@ -1,7 +1,0 @@
-- struct to manage state (cst_mgr)
-- instead of making a tree of functions w/ only 1 handler, set one handler for each endpoint
-- the framework will have to have functions that parse the headers, and organize all necessary data before passing it to the handlers.
-- it will also have a functino for easy data parsing for smller bodies
-- however, the user will have full control of what they do with the body as well.
-- there will also be functions to build the response
-- there will be wrappers for the default socket functions, such as socket(), listen(), accept() etc.
