@@ -12,12 +12,41 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        with: 
+          fetch-depth: 0
+
+      - name: Set up Git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Bundle source files
         run: |
-          cd prod; ./package.sh || exit 1
+          cd prod
+          rm -f sculpt.h sculpt.c
+          ./package.sh || exit 1
+
+      - name: Verify bundling output
+      run: |
+        if [ ! -f prod/sculpt.h ] || [ ! -f prod/sculpt.c ]; then
+          echo "Bundling failed: Expected output files not found."
+          exit 1
+        fi
+      
+      - name: Commit and push bundled files
+        # don't trigger the action if it has already run
+        if: "!contains(github.event.head_commit.message, 'Auto-bundling source files')"
+        run: |
+          # commit and push if there are changes
+          if [ -n "$(git status --porcelain)" ]; then
+            git add .
+            git commit -m "Auto-bundling source files"
+            git push origin stable
+          else
+            echo "No changes to commit."
+          fi
 
       - name: Check bundling failures
         if: failure()
         run: echo "Failed to build source files with ./package.sh."
-        continue-on-error: false
+        continue-on-error: true
