@@ -10,7 +10,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
-#include "sculpt.h"
+#include "src/sculpt.h"
 
 #define PORT 8000
 #define BACKLOG 128
