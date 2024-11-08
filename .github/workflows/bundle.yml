@@ -14,7 +14,7 @@ jobs:
         run: |
           cd prod; ./package.sh || exit 1
 
-      - name: Check bundling failures:
+      - name: Check bundling failures
         if: failure()
         run: echo "Failed to build source files with ./package.sh."
         continue-on-error: false
