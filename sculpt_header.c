@@ -5,27 +5,45 @@
 #include "sculpt.h"
 
 static sc_headers *_create_header(const char *header, sc_headers *next) {
-    // Allocate memory for the new header
     sc_headers *headers = malloc(sizeof(sc_headers));
     if (headers == NULL) {
-        return NULL; // Handle memory allocation failure
+        return NULL;
     }
     
-    // Initialize the header and set next to NULL
-    headers->header = strdup(header); // Use strdup to allocate memory for the string
+    headers->header = strdup(header);
+    if (headers->header == NULL) {
+        sc_headers_free(headers);
+        return NULL;
+    }
+
+    headers->header_len = strlen(header);
     headers->next = next;
 
     return headers;
 }
 
 sc_headers *sc_header_append(const char *header, sc_headers *list) {
-    return _create_header(header, list);
+    sc_headers *res;
+    if (!strstr(header, "\r\n")) {
+        size_t len = strlen(header) + 3;
+        char *h = malloc(len);
+        if (h == NULL) {
+            return NULL;
+        }
+        h[len - 1] = '\0';
+        snprintf(h, len, "%s\r\n", header); 
+        res = _create_header(h, list);
+        free(h);
+    } else {
+        res = _create_header(header, list);
+    }
+    return res;
 }
 
 void sc_headers_free(sc_headers *headers) {
     while(headers) {
         sc_headers *next = headers->next;
-        free((char *) headers->header);
+        free(headers->header);
         free(headers);
         headers = next;
     }

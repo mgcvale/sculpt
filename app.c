@@ -23,17 +23,11 @@ static void signal_handler(int sig) {
 }
 
 void root_handler(int fd, sc_http_msg msg) {
-    const char *http_response_200 = 
-    "HTTP/1.1 200 OK\r\n"
-    "Content-Type: text/html; charset=UTF-8\r\n"
-    "Content-Length: 54\r\n"
-    "Connection: keep-alive\r\n"
-    "\r\n"
-    "<html><h1>Success!</h1><p>Body from handler</p></html>";
-    if (send(fd, http_response_200, strlen(http_response_200), 0) == -1) {
-        perror("Error sending response");
+    const char *body = "Hello, world";
+    if (sc_easy_send(fd, 200, "OK", "Content-Type: text/html", body, NULL) == SC_OK) {
+        printf("Response sent\n");
     } else {
-        printf("Response sent successfully\n");
+        perror("Error sending response");
     }
 }
 
@@ -48,13 +42,6 @@ int main() {
         exit(EXIT_FAILURE);
     }
     
-    error = sc_mgr_listen(mgr);
-    if (error != SC_OK) {
-        fprintf(stderr, "Error on listen: %d", error);
-        sc_mgr_finish(mgr);
-        exit(EXIT_FAILURE);
-    }
-
     int rc = sc_mgr_epoll_init(mgr);
     if (rc != SC_OK) {
         fprintf(stderr, "Error initializing epoll: %d", rc);
@@ -65,6 +52,13 @@ int main() {
     rc = sc_mgr_pool_init(mgr, 20);
     if (rc != SC_OK) {
         fprintf(stderr, "Error initializing connection pool: %d", rc);
+        sc_mgr_finish(mgr);
+        exit(EXIT_FAILURE);
+    }
+
+    error = sc_mgr_listen(mgr);
+    if (error != SC_OK) {
+        fprintf(stderr, "Error on listen: %d", error);
         sc_mgr_finish(mgr);
         exit(EXIT_FAILURE);
     }

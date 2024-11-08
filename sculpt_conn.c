@@ -180,14 +180,14 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                             break; // stop if we got to the end of the headers
                         }
                     } else if (bytes_read == -1) {
-                         if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
                             // no more data to read, break out of loop
                             break;
-                         }
+                        }
                          // else this was just an error
-                         printf("Error reading body from client\n");
-                         return_500(mgr, conn);
-                         return SC_OK;
+                        printf("Error reading body from client\n");
+                        return_500(mgr, conn);
+                        return SC_OK;
                     } else { // bytes_read == 0 (conn closed by client)
                         close(conn->fd);
                         sc_mgr_conn_release(mgr, conn);
@@ -239,13 +239,13 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
 
                 end:
                     if (!keep_alive) {
-                        fprintf(stdout, "Connection close requested\n");
+                        printf("Connection close requested\n");
                         close(conn->fd);
                         sc_mgr_conn_release(mgr, conn);                    
                         epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
                     } else {
                         printf("Re-adding connection to epoll\n");
-                        // Re-add the connection to epoll for further requests
+                        // re-add the connection to epoll for further requests
                         struct epoll_event event = {
                             .events = EPOLLIN | EPOLLRDHUP | EPOLLONESHOT,
                             .data.ptr = conn

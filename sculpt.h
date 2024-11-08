@@ -26,6 +26,7 @@
 #define SC_ACCEPT_ERR -10
 #define SC_BAD_ARGUMENTS_ERR -11
 #define SC_FCNTL_ERR -12
+#define SC_SEND_ERR -13
 
 #define SC_DEFAULT_BACKLOG 128
 #define SC_DEFAULT_EPOLL_MAXEVENTS 12
@@ -37,7 +38,6 @@
 #define HEADER_BUF_SIZE 1024
 #define METHOD_BUF_SIZE 16
 #define URL_BUF_SIZE 128
-
 #define SC_CONTINUE 1
 // utils
 
@@ -79,7 +79,8 @@ struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *en
 
 /* struct to hold headers of a request */
 typedef struct _header_list {
-    const char *header;
+    char *header;
+    size_t header_len;
     struct _header_list *next;
 } sc_headers;
 
@@ -149,5 +150,12 @@ int sc_mgr_epoll_init(sc_conn_mgr *mgr);
 int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms);
 int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg));
 int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg));
+
+
+// sending and recieving data utils
+
+int sc_easy_send(int fd, int code, const char *code_str, const char *content_type, const char *body, sc_headers *headers);
+char *sc_easy_request_build(int code, const char *code_str, const char *body, sc_headers *headers);
+int sc_easy_send2(int fd, int code, const char *code_str, const char *body, sc_headers *headers);
 
 #endif // SCULPT_H
