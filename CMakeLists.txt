@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.5)
 
 project(testapp LANGUAGES C)
+project(prodapp LANGUAGES C)
 
 add_executable(testapp
     src/sculpt.h
@@ -11,4 +12,10 @@ add_executable(testapp
     app.c
 )
 
-install(TARGETS testapp RUNTIME DESTINATION bin)
+add_executable(prodapp
+    prod/sculpt.h
+    prod/sculpt.c
+    app.c
+)
+
+install(TARGETS testapp prodapp RUNTIME DESTINATION bin)
