@@ -1,0 +1,20 @@
+name: Bundle source and header files into single sculpt.h and sculpt.c
+
+on:
+  push:
+    branches:
+      - stable
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Bundle source files
+        run: |
+          cd prod; ./package.sh || exit 1
+
+      - name: Check bundling failures:
+        if: failure()
+        run: echo "Failed to build source files with ./package.sh."
+        continue-on-error: false
