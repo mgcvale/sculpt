@@ -29,9 +29,6 @@
 #define SC_SEND_ERR -13
 #define SC_CONN_CLOSED -14
 #define SC_READ_ERR -15
-#define SC_FINISHED -16
-#define SC_BUFFER_OVERFLOW_ERR -17
-#define SC_MALFORMED_HEADER_ERR -18
 
 #define SC_DEFAULT_BACKLOG 128
 #define SC_DEFAULT_EPOLL_MAXEVENTS 12
@@ -44,7 +41,6 @@
 #define METHOD_BUF_SIZE 16
 #define URL_BUF_SIZE 128
 #define SC_CONTINUE 1
-#define SC_MAX_HEADER_ERROR_COUNT 12
 
 #define SC_LL_NONE 0
 #define SC_LL_MINIMAL 1
@@ -53,28 +49,17 @@
 
 // utils
 
-/* Describes a string with len attribute. The string can either be kept as a copy of the memory passed in the mk methods, or as a reference.*/
+/* Describes a string with len attribute. By nature, this string has a constant value.*/
 typedef struct {
     char *buf;
     size_t len;
 } sc_str;
 
-/* Creates a sc_str from char buffer, REFERENCING its contents. Assumes null-terminated string*/
-sc_str sc_str_ref(const char *str);
+/* Creates a sc_str from char buffer. Assumes null-terminated string*/
+sc_str sc_mk_str(const char *str);
 
-/* Creates a sc_str from a char buffer with length, REFERENCING its contents. Does not assume null-terminated string*/
-sc_str sc_str_ref_n(const char *str, size_t len);
-
-/* Creates a sc_str from a char buffer, COPYING its contents. Assumes null-terminated string*/
-/* Note: this method requires freeing the string after use. */
-sc_str sc_str_copy(const char *str);
-
-/* Creates a sc_str from a char buffer with length, COPYING its contents. Does not assume null-terminated string*/
-/* Note: this method requires freeing the string after use. */
-sc_str sc_str_copy_n(const char *str, size_t len);
-
-/* Assumes string was created with sc_str_copy function. */
-void sc_str_free(sc_str *str);
+/* Creates a sc_str from a char buffer with length. Does not assume null-terminated string*/
+sc_str sc_mk_str_n(const char *str, size_t len);
 
 /* strncmp for sc_str */
 int sc_strcmp(const sc_str str1, const sc_str str2);
@@ -83,7 +68,7 @@ bool sc_strprefix(const sc_str str, const sc_str prefix);
 
 /* describes the basic necessary info about an http message for virtually any rquest */ 
 typedef struct {
-    sc_str uri;
+    sc_str uri;    
     sc_str method;
 } sc_http_msg;
 
@@ -102,15 +87,14 @@ struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *en
 
 /* struct to hold headers of a request */
 typedef struct _header_list {
-    sc_str header;
+    char *header;
+    size_t header_len;
     struct _header_list *next;
 } sc_headers;
 
 sc_headers *sc_header_append(const char *header, sc_headers *list);
 void sc_headers_free(sc_headers *headers);
-void sc_header_free(sc_headers *headers);
 sc_headers *parse_headers(const char *headers_str);
-
 
 // actual framework
 typedef struct {

@@ -16,7 +16,7 @@ sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
     *err = SC_OK;
     sc_conn_mgr *mgr = malloc(sizeof(sc_conn_mgr));
     if (mgr == NULL) {
-        perror("Error: memory allocation for sc_conn_mgr");
+        perror("[Sculpt] Error: memory allocation for sc_conn_mgr");
         *err = SC_MALLOC_ERR;
         return NULL;
     }
@@ -30,7 +30,7 @@ sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
 
     mgr->fd = socket(AF_INET, SOCK_STREAM, 0);
     if (mgr->fd < 0) {
-        perror("Error: error creating socket for conn_mgr");
+        perror("[Sculpt] Error: error creating socket for conn_mgr");
         free(mgr);
         *err = SC_SOCKET_CREATION_ERR;
         return NULL;
@@ -38,13 +38,13 @@ sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
     
     int opt = 1;
     if (setsockopt(mgr->fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(int)) < 0) {
-        perror("Error: failed to set socket options");
+        perror("[Sculpt] Error: failed to set socket options");
         *err = SC_SOCKET_SETOPT_ERR;
         goto error;
     }
 
     if (bind(mgr->fd, (struct sockaddr *)&mgr->addr_info, sizeof(mgr->addr_info))) {
-        perror("Error: Failed to bind server to the address");
+        perror("[Sculpt] Error: Failed to bind server to the address");
         *err = SC_SOCKET_BIND_ERR;
         goto error;
     }
@@ -57,12 +57,16 @@ sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
     return NULL;
 }
 
-void sc_mgr_set_backlog(sc_conn_mgr *mgr, int backlog) {
+void sc_mgr_backlog_set(sc_conn_mgr *mgr, int backlog) {
     mgr->backlog = backlog;
 }
 
-void sc_mgr_set_epoll_maxevents(sc_conn_mgr *mgr, int maxevents) {
+void sc_mgr_epoll_maxevents_set(sc_conn_mgr *mgr, int maxevents) {
     mgr->max_events = maxevents;
+}
+
+void sc_mgr_ll_set(sc_conn_mgr *mgr, int ll) {
+    mgr->ll = ll;
 }
 
 int sc_mgr_listen(sc_conn_mgr *mgr) {
@@ -75,12 +79,12 @@ int sc_mgr_listen(sc_conn_mgr *mgr) {
                         mgr->host_buf, sizeof(mgr->host_buf),
                         mgr->service_buf, sizeof(mgr->service_buf), 0);
     if (rc != 0) {
-        fprintf(stderr, "Warning: %s\n", gai_strerror(rc));
+        fprintf(stderr, "[Sculpt] Warning: %s; ", gai_strerror(rc));
         fprintf(stderr, "Server is listening on unknown URL\n");
         return SC_SOCKET_GETNAMEINFO_ERR;
     }
 
-    printf("\nServer is listening on http://%s%s:%d\n", mgr->host_buf, mgr->service_buf, mgr->addr_info.port);
+    printf("\n[Sculpt] Server is listening on http://%s%s:%d\n", mgr->host_buf, mgr->service_buf, mgr->addr_info.port);
 
     mgr->listening = true;
     return SC_OK;
@@ -90,9 +94,12 @@ void sc_mgr_finish(sc_conn_mgr *mgr) {
     if (!mgr) {
         return;
     }
+    int ll = mgr->ll;
 
     sc_mgr_conn_pool_destroy(mgr);
-    printf("freed conn pool\n");
+    if (ll == SC_LL_DEBUG) {
+        printf("[Sculpt]freed conn pool\n");
+    }
 
     // close epoll fd and free events array
     if (mgr->epoll_fd >= 0) {
@@ -102,14 +109,16 @@ void sc_mgr_finish(sc_conn_mgr *mgr) {
     free(mgr->events);
     mgr->events = NULL; // !! dangling pointers
 
-    printf("freed epoll\n");
+    printf("[Sculpt]freed epoll\n");
 
     // close server socket
     if (mgr->fd >= 0) {
         close(mgr->fd);
         mgr->fd = -1;
     }
-    printf("freed server socket\n");
+    if (ll == SC_LL_DEBUG) {
+        printf("[Sculpt]freed server socket\n");
+    }
 
     // free endpoints list
     while(mgr->endpoints) {
@@ -129,9 +138,10 @@ int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_h
 }
 
 int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg)) {
-    printf("Binding: %s\n", endpoint);
     mgr->endpoints = _endpoint_add(mgr->endpoints, endpoint, true, f);
-    printf("Endpoint added: %s", mgr->endpoints->val.buf);
+    if (mgr->ll == SC_LL_DEBUG) {
+        printf("[Sculpt]Endpoint added: %s", mgr->endpoints->val.buf);
+    }
     if (mgr->endpoints == NULL) {
         return SC_MALLOC_ERR;
     }

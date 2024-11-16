@@ -49,7 +49,7 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    rc = sc_mgr_pool_init(mgr, 20);
+    rc = sc_mgr_conn_pool_init(mgr, 20);
     if (rc != SC_OK) {
         fprintf(stderr, "Error initializing connection pool: %d", rc);
         sc_mgr_finish(mgr);

@@ -2,44 +2,89 @@
 #include <string.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdarg.h>
 
 #include "sculpt.h"
 
 
-const char *http_template =
-    "HTTP/1.1 %d %s\r\n"
+const char *http_template = "HTTP/1.1 %d %s\r\n"
     "Content-Length: %zu\r\n"
     "Connection: keep-alive\r\n";
 
+// logging
+void sc_log(sc_conn_mgr *mgr, int ll, const char *format, ...) {
+    // only log if the current log level (ll) is equal or higher than the requested one (level)
+    // exapmle: ll = SC_LL_NORMAL (2), level = SC_LL_MINIMAL (1) -> we log;
+    // ll = SC_LL_MINIMAL (1), level = SC_LL_NORMAL (2) -> we DON'T log;
+    if (ll == SC_LL_NONE || ll < mgr->ll) return;
 
-sc_str sc_mk_str(const char *str) {
+    va_list args;
+    va_start(args, format);
+    vprintf(format, args);
+    va_end(args);
+}
+
+void sc_error_log(sc_conn_mgr *mgr, int ll, const char *format, ...) {
+    if (ll == SC_LL_NONE || ll < mgr->ll) return;
+
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    va_end(args);
+}
+
+void sc_perror(sc_conn_mgr *mgr, int ll, const char *err) {
+    if (ll == SC_LL_NONE || ll < mgr->ll) return;
+
+    perror(err);
+}
+
+sc_str sc_str_ref(const char *str) {
     sc_str sc_str = {(char *) str, str == NULL ? 0 : strlen(str)};
     return sc_str;
 }
 
-sc_str sc_mk_str_n(const char *str, size_t len) {
+sc_str sc_str_ref_n(const char *str, size_t len) {
     sc_str sc_str = {(char *) str, len};
     return sc_str;
 }
 
+sc_str sc_str_copy(const char *str) {
+    size_t buf_size = strlen(str);
+    return sc_str_copy_n(str, buf_size);
+}
+
+sc_str sc_str_copy_n(const char *str, size_t len) {
+    char *buf = malloc(len + 1);
+    memcpy(buf, str, len);
+    buf[len] = '\0';
+    sc_str sc_str = {buf, len};
+    return sc_str;
+}
+
+void sc_str_free(sc_str *str) {
+    if (str->buf != NULL) {
+        free(str->buf);
+    }
+}
+
 int sc_strcmp(const sc_str str1, const sc_str str2) {
-  size_t i;
-  for (i = 0; i < str1.len && i < str2.len; i++) {
-    int ch1 = str1.buf[i];
-    int ch2 = str2.buf[i];
-    if (ch1 < ch2) return -1;
-    if (ch1 > ch2) return 1;
-  }
-  if (i < str1.len) return 1;
-  if (i < str2.len) return -1;
-  return 0;
+    size_t i;
+    for (i = 0; i < str1.len && i < str2.len; i++) {
+      int ch1 = str1.buf[i];
+      int ch2 = str2.buf[i];
+      if (ch1 < ch2) return -1;
+      if (ch1 > ch2) return 1;
+    }
+    if (i < str1.len) return 1;
+    if (i < str2.len) return -1;
+    return 0;
 }
 
 bool sc_strprefix(const sc_str str, const sc_str prefix) {
     if (str.len < prefix.len) {
         return false; // false if str is shorter than prefix
     }
-
 
     return memcmp(str.buf, prefix.buf, prefix.len) == 0;
 }
@@ -52,7 +97,7 @@ struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *en
 
     new->soft = soft;
     new->func = func;
-    sc_str val = sc_mk_str_n(endpoint, strlen(endpoint));
+    sc_str val = sc_str_ref_n(endpoint, strlen(endpoint));
     new->val = val;
     new->next = list;
     return new;
@@ -66,7 +111,7 @@ char *sc_easy_request_build(int code, const char *code_str, const char *body, sc
     sc_headers *current = headers;
     while (current) {
         // assuming the header_len includes the \r\n, as it should
-        response_len += current->header_len + 1; 
+        response_len += current->header.len + 1; 
         current = current->next;
     }
 
@@ -86,7 +131,7 @@ char *sc_easy_request_build(int code, const char *code_str, const char *body, sc
     current = headers;
     while (current) {
         // assuming the header ends with \r\n, as it should
-        strncat(response, current->header, strlen(current->header));
+        strncat(response, current->header.buf, current->header.len);
         current = current->next;
     }
 
@@ -105,17 +150,12 @@ int sc_easy_send(int fd, int code, const char *code_str, const char *content_typ
         return SC_MALLOC_ERR;
     }
 
-    sc_headers *added_header = headers;
-    headers = headers->next;
-    free(added_header->header);
-    free(added_header);
-
-
     if (send(fd, response, strlen(response), 0) == -1) {
        return SC_SEND_ERR;
     }
 
     free(response);
+    sc_headers_free(headers);
 
     return SC_OK;
 }
