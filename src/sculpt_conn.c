@@ -22,6 +22,9 @@
         } \
     } while (0)
 
+#define SC_HEADER_PARSE_ERR -256
+#define SC_HEADER_PARSE_INCOMPLETE_ERR -257
+
 int sc_mgr_epoll_init(sc_conn_mgr *mgr) {
     RETURN_ERROR_IF(!mgr, SC_BAD_ARGUMENTS_ERR, "[Sculpt] NULL manager provided");
 
@@ -117,23 +120,34 @@ static void return_500(sc_conn_mgr *mgr, sc_conn *conn) {
      epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
 }
 
+void cleanup_after_error(sc_conn_mgr *mgr, sc_conn *conn) {
+    if (conn) {
+        return_500(mgr, conn);
+        sc_mgr_conn_release(mgr, conn);
+        close(conn->fd);
+        epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+    }
+}
+
 int next_header(int fd, char *header, size_t buf_len) {
     header[0] = '\0';
     size_t header_len = 0;
     char last_char = '\0';
+
     while (1) {
         if (header_len >= buf_len - 1) { // stop if the header is larger than the buffer
             return SC_BUFFER_OVERFLOW_ERR;
         }
+
         ssize_t bytes_read = read(fd, &header[header_len], 1);
         if (bytes_read > 0) {
-            header_len++;
-            header[header_len] = '\0';
             if (last_char == '\r' && header[header_len] == '\n') {
                 // we got to the end of the header
                 break;
             }
-            last_char = header[header_len - 1];
+            last_char = header[header_len];
+            header_len++;
+            header[header_len] = '\0';        
         } else if (bytes_read == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 // no more data to read, break out of loop
@@ -148,12 +162,14 @@ int next_header(int fd, char *header, size_t buf_len) {
                 // we still have some header data read, but EOF is reached
                 return SC_OK; 
             }
-            return SC_FINISHED; // no more data in the stream (probably a malformed request)
+            return SC_FINISHED;
         }
     }
+
     if ((header[0] == '\r' && header[1] == '\n') || header[0] == '\0') { // the header is empty, that is, we have reached the end of the headers
         return SC_FINISHED;
     }
+
     return SC_OK;
 }
 
@@ -161,7 +177,7 @@ int get_http_msg(char *header, sc_http_msg *http_msg) {
     if (http_msg == NULL) {
         return SC_BAD_ARGUMENTS_ERR;
     }
-    if (!header) {
+    if (header == NULL) {
         return SC_BAD_ARGUMENTS_ERR;
     }    
     
@@ -207,6 +223,64 @@ int get_http_msg(char *header, sc_http_msg *http_msg) {
     return SC_OK;
 }
 
+static int parse_all_headers(sc_conn_mgr *mgr, sc_conn *conn, sc_headers **headers, sc_http_msg *http_msg, bool *keep_alive) {
+
+    int err;
+    // get and parse headers
+    // first, get the initial HTTP header (METHOD URI HTTP/VERSION)
+    char header_buf[HEADER_BUF_SIZE] = {0};
+    err = next_header(conn->fd, header_buf, HEADER_BUF_SIZE);
+    if (err != SC_OK && err != SC_FINISHED) {
+        fprintf(stderr, "[Sculpt] Critical: Error parsing request line header. Proceeding is impossible. Error code: %d\n", err);
+        cleanup_after_error(mgr, conn);
+        return SC_HEADER_PARSE_ERR;
+    }
+
+    err = get_http_msg(header_buf, http_msg);
+    if (err != SC_OK) {
+        fprintf(stderr, "[Sculpt] Critical: error parsing URI and Method from HTTP request line. Proceeding is impossible. Error code: %d\n", err); 
+        cleanup_after_error(mgr, conn);
+        return SC_HEADER_PARSE_ERR;
+    }
+    printf("HTTP MSG: %s, %s\n", http_msg->uri.buf, http_msg->method.buf);
+
+    // now, we parse the missing HTTP headers into sc_headers
+    *headers = NULL;
+    int error_count = 0;
+    while (err != SC_FINISHED) {
+        // check if there are happening errors consistently
+        if (error_count >= SC_MAX_HEADER_ERROR_COUNT) {
+            fprintf(stderr, "[Sculpt] More than %d consecutive errors occoured in header parsing. Interrupting parsing process.\n", SC_MAX_HEADER_ERROR_COUNT);
+            return SC_HEADER_PARSE_ERR;
+        }
+
+        // get next header
+        err = next_header(conn->fd, header_buf, HEADER_BUF_SIZE);
+        if (err != SC_OK && err != SC_FINISHED) {
+            fprintf(stderr, "[Sculpt] Error parsing one of the headers in request, error code: %d\n", err);
+            error_count ++;
+            continue;
+        }
+        if (err == SC_FINISHED) {
+            continue;
+        }
+
+        if (strstr(header_buf, "Connection: keep-alive")) {
+            *keep_alive = true;
+        }
+
+        // add header to headers list
+        *headers = sc_header_append(header_buf, *headers);
+        if (headers == NULL) {
+            fprintf(stderr, "[Sculpt] Error appending new header to header list. Headers may be incomplete as a result.");
+        }
+
+        error_count = 0;
+    }
+
+    return SC_OK;
+}
+
 int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
     RETURN_ERROR_IF(!mgr, SC_BAD_ARGUMENTS_ERR, "[Sculpt] The mgr pointer cant be null");
     sc_mgr_conns_cleanup(mgr);
@@ -227,12 +301,7 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
         if (mgr->events[i].events & EPOLLERR) {
             sc_conn *conn = mgr->events[i].data.ptr;
             perror("[Sculpt] Error with epoll, closing connection...");
-            if (conn) {
-                return_500(mgr, conn);
-                sc_mgr_conn_release(mgr, conn);
-                close(conn->fd);
-                epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-            }
+            cleanup_after_error(mgr, conn);
             continue;
         }
 
@@ -257,61 +326,12 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
             if (mgr->events[i].events & EPOLLIN) {
                 bool keep_alive = false;
                 conn->last_active = time(NULL);
-               
-                int err;
-                // get and parse headers
-                // first, get the initial HTTP header (METHOD URI HTTP/VERSION)
-                char header_buf[HEADER_BUF_SIZE];
-                err = next_header(conn->fd, header_buf, HEADER_BUF_SIZE);
-                if (err != SC_OK && err != SC_FINISHED) {
-                    fprintf(stderr, "[Sculpt] Critical: Error parsing request line header. Proceeding is impossible. Error code: %d\n", err);
-                    return_500(mgr, conn);
-                    close(conn->fd);
-                    sc_mgr_conn_release(mgr, conn);
-                    epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-                    break;
-                }
-                sc_http_msg http_msg;
-                err = get_http_msg(header_buf, &http_msg);
-                if (err != SC_OK) {
-                    fprintf(stderr, "[Sculpt] Critical: error parsing URI and Method from HTTP request line. Proceeding is impossible. Error code: %d\n", err); 
-                    return_500(mgr, conn);
-                    close(conn->fd);
-                    sc_mgr_conn_release(mgr, conn);
-                    epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-                    break;
-                }
-                printf("HTTP MSG: %s, %s\n", http_msg.uri.buf, http_msg.method.buf);
                 
-                // now, we parse the missing HTTP headers into sc_headers
                 sc_headers *headers = NULL;
-                int error_count = 0;
-                while (err != SC_FINISHED) {
-                    // check if there are happening errors consistently
-                    if (error_count >= SC_MAX_HEADER_ERROR_COUNT) {
-                        fprintf(stderr, "[Sculpt] More than %d consecutive errors occoured in header parsing. Interrupting parsing process.\n", SC_MAX_HEADER_ERROR_COUNT);
-                        break;
-                    }
-
-                    // get next header
-                    err = next_header(conn->fd, header_buf, HEADER_BUF_SIZE);
-                    if (err != SC_OK && err != SC_FINISHED) {
-                        fprintf(stderr, "[Sculpt] Error parsing one of the headers in request, error code: %d\n", err);
-                        error_count ++;
-                        continue;
-                    }
-      
-                    if (strstr(header_buf, "Connection: keep-alive")) {
-                        keep_alive = true;
-                    }
-
-                    // add header to headers list
-                    headers = sc_header_append(header_buf, headers);
-                    if (headers == NULL) {
-                        fprintf(stderr, "[Sculpt] Error appending new header to header list. Headers may be incomplete as a result.");
-                    }
-                    
-                    error_count = 0;
+                sc_http_msg http_msg;
+                int err = parse_all_headers(mgr, conn, &headers, &http_msg, &keep_alive);
+                if (err != SC_OK) {
+                    sc_headers_free(headers);
                 }
 
                 // log request
@@ -338,6 +358,7 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                     }
                     current = current->next;
                 }
+
                 // no valid enpoints were found, so we return 404
                 const char *http_response_404 = 
                 "HTTP/1.1 404 NOT FOUND\r\n"
@@ -355,9 +376,9 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                     if (!keep_alive) {
                         printf("[Sculpt] Connection close requested\n");
                         close(conn->fd);
-                        sc_mgr_conn_release(mgr, conn);                    
+                        sc_mgr_conn_release(mgr, conn);
                         epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-                    } /* else {
+                    } else {
                         // re-add the connection to epoll for further requests
                         struct epoll_event event = {
                             .events = EPOLLIN | EPOLLRDHUP | EPOLLONESHOT,
@@ -368,7 +389,7 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                             close(conn->fd);
                             sc_mgr_conn_release(mgr, conn);
                         }
-                    } */ // Will not use EPOLLONESHOT for now, as the system is not multithreaded.
+                    }
 
                 // all other responsibilities are passed to the handler, so no need to do anything else
             } else {
