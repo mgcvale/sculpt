@@ -52,9 +52,9 @@ sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
     return mgr;
 
     error:
-    close(mgr->fd);
-    free(mgr);
-    return NULL;
+        close(mgr->fd);
+        free(mgr);
+        return NULL;
 }
 
 void sc_mgr_backlog_set(sc_conn_mgr *mgr, int backlog) {
@@ -118,7 +118,7 @@ void sc_mgr_finish(sc_conn_mgr *mgr) {
     }
     if (ll == SC_LL_DEBUG) {
         printf("[Sculpt]freed server socket\n");
-    }
+     }
 
     // free endpoints list
     while(mgr->endpoints) {
@@ -129,7 +129,21 @@ void sc_mgr_finish(sc_conn_mgr *mgr) {
     free(mgr);
 }
 
-int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg)) {
+struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *endpoint, bool soft, void (*func)(int, sc_http_msg, sc_headers*)) {
+    struct _endpoint_list *new = malloc(sizeof(struct _endpoint_list));
+    if (new == NULL) {
+        return NULL;
+    }
+
+    new->soft = soft;
+    new->func = func;
+    sc_str val = sc_str_ref_n(endpoint, strlen(endpoint));
+    new->val = val;
+    new->next = list;
+    return new;
+}
+
+int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*)) {
     mgr->endpoints = _endpoint_add(mgr->endpoints, endpoint, false, f);
     if (mgr->endpoints == NULL) {
        return SC_MALLOC_ERR;
@@ -137,7 +151,7 @@ int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_h
     return SC_OK;
 }
 
-int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg)) {
+int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*)) {
     mgr->endpoints = _endpoint_add(mgr->endpoints, endpoint, true, f);
     if (mgr->ll == SC_LL_DEBUG) {
         printf("[Sculpt]Endpoint added: %s", mgr->endpoints->val.buf);

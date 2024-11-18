@@ -14,6 +14,7 @@
 
 #define PORT 8000
 #define BACKLOG 128
+#define BODY_BUF 4096
 
 static bool s_exit_flag = false;
 
@@ -22,8 +23,21 @@ static void signal_handler(int sig) {
     s_exit_flag = true;
 }
 
-void root_handler(int fd, sc_http_msg msg) {
-    const char *body = "Hello, world";
+void root_handler(int fd, sc_http_msg msg, sc_headers *headers) {
+    char body[BODY_BUF] = "<html><h1>Hello, world! Your request:</h1>\0";
+    size_t body_size = strlen(body);
+    
+    sc_headers *current = headers;
+    while (current) {
+        body_size += current->header.len + 7;
+        if (body_size + 8 >= BODY_BUF) break; // 8 for the </html>
+        strncat(body, "<p>", 4);
+        strncat(body, current->header.buf, current->header.len);
+        strncat(body, "</p>", 5);
+        current = current->next;
+    }
+    strncat(body, "</html>", 8);
+    
     if (sc_easy_send(fd, 200, "OK", "Content-Type: text/html", body, NULL) == SC_OK) {
         printf("Response sent\n");
     } else {

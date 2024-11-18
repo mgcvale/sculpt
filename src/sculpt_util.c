@@ -89,20 +89,6 @@ bool sc_strprefix(const sc_str str, const sc_str prefix) {
     return memcmp(str.buf, prefix.buf, prefix.len) == 0;
 }
 
-struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *endpoint, bool soft, void (*func)(int, sc_http_msg)) {
-    struct _endpoint_list *new = malloc(sizeof(struct _endpoint_list));
-    if (new == NULL) {
-        return NULL;
-    }
-
-    new->soft = soft;
-    new->func = func;
-    sc_str val = sc_str_ref_n(endpoint, strlen(endpoint));
-    new->val = val;
-    new->next = list;
-    return new;
-}
-
 char *sc_easy_request_build(int code, const char *code_str, const char *body, sc_headers *headers) {
     char *request;
     size_t response_len = strlen(http_template) + strlen(code_str) + 3 + 16 + 4; 

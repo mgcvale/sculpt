@@ -41,7 +41,7 @@ sc_headers *sc_header_append(const char *header, sc_headers *list) {
 
 void sc_headers_free(sc_headers *headers) {
     printf("Freeing headers\n");
-    while(headers) {
+    while(headers != NULL) {
         sc_headers *next = headers->next;
         sc_str_free(&headers->header);
         free(headers);

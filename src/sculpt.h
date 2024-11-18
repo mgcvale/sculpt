@@ -87,19 +87,6 @@ typedef struct {
     sc_str method;
 } sc_http_msg;
 
-
-/* describes a linked list of the set endpoints */
-struct _endpoint_list {
-    sc_str val;
-    void (*func)(int, sc_http_msg);
-    bool soft;
-    struct _endpoint_list *next;
-};
-
-struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *endpoint, bool soft, void (*func)(int, sc_http_msg));
-
-// headers
-
 /* struct to hold headers of a request */
 typedef struct _header_list {
     sc_str header;
@@ -111,6 +98,10 @@ void sc_headers_free(sc_headers *headers);
 void sc_header_free(sc_headers *headers);
 sc_headers *parse_headers(const char *headers_str);
 
+
+/* describes a linked list of the set endpoints */
+
+// headers
 
 // actual framework
 typedef struct {
@@ -175,15 +166,26 @@ void sc_mgr_conn_release(sc_conn_mgr *mgr, sc_conn *conn);
 void sc_mgr_conns_cleanup(sc_conn_mgr *mgr);
 
 int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms);
-int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg));
-int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg));
-
 
 // sending and recieving data utils
 
 int sc_easy_send(int fd, int code, const char *code_str, const char *content_type, const char *body, sc_headers *headers);
 char *sc_easy_request_build(int code, const char *code_str, const char *body, sc_headers *headers);
 int sc_easy_send2(int fd, int code, const char *code_str, const char *body, sc_headers *headers);
+
+struct _endpoint_list {
+    sc_str val;
+    void (*func)(int, sc_http_msg, sc_headers*);
+    bool soft;
+    struct _endpoint_list *next;
+};
+
+struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *endpoint, bool soft, void (*func)(int, sc_http_msg, sc_headers*));
+int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*));
+int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*));
+
+
+
 
 
 // logging
