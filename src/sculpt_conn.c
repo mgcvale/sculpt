@@ -143,6 +143,8 @@ int next_header(int fd, char *header, size_t buf_len) {
         if (bytes_read > 0) {
             if (last_char == '\r' && header[header_len] == '\n') {
                 // we got to the end of the header
+                header[header_len - 1] = '\0';
+                header_len --;
                 break;
             }
             last_char = header[header_len];
@@ -166,7 +168,7 @@ int next_header(int fd, char *header, size_t buf_len) {
         }
     }
 
-    if ((header[0] == '\r' && header[1] == '\n') || header[0] == '\0') { // the header is empty, that is, we have reached the end of the headers
+    if (header[0] == '\0') { // the header is empty, that is, we have reached the end of the headers
         return SC_FINISHED;
     }
 
@@ -342,7 +344,7 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                         // we call it even if just the prefix matches
                         if (sc_strprefix(http_msg.uri, current->val)) {
                             // the uri buffer starts with the prefix of the endpoint
-                            current->func(conn->fd, http_msg);
+                            current->func(conn->fd, http_msg, headers);
                             sc_str_free(&http_msg.uri);
                             sc_str_free(&http_msg.method);
                             goto end;
@@ -350,7 +352,7 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                     } else {
                         if(sc_strcmp(current->val, http_msg.uri) == 0) {
                             // the uri buffer is EQUAL to the endpoint
-                            current->func(conn->fd, http_msg);
+                            current->func(conn->fd, http_msg, headers);
                             sc_str_free(&http_msg.uri);
                             sc_str_free(&http_msg.method);
                             goto end;
@@ -388,6 +390,7 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                             perror("[Sculpt] Failed to re-add connection to epoll");
                             close(conn->fd);
                             sc_mgr_conn_release(mgr, conn);
+                            epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, &event);
                         }
                     }
 
