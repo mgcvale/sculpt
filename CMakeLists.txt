@@ -12,10 +12,10 @@ add_executable(testapp
     app.c
 )
 
-add_executable(prodapp
-    prod/sculpt.h
-    prod/sculpt.c
-    app.c
-)
+#add_executable(prodapp
+#    prod/sculpt.h
+#    prod/sculpt.c
+#    app.c
+#)
 
-install(TARGETS testapp prodapp RUNTIME DESTINATION bin)
+install(TARGETS testapp RUNTIME DESTINATION bin)

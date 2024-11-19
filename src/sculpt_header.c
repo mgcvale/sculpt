@@ -10,13 +10,12 @@ static sc_headers *_create_header(const char *header, sc_headers *next) {
         return NULL;
     }
     
-    headers->header = strdup(header);
-    if (headers->header == NULL) {
+    headers->header = sc_str_copy(header);
+    if (headers->header.buf == NULL) {
         sc_headers_free(headers);
         return NULL;
     }
 
-    headers->header_len = strlen(header);
     headers->next = next;
 
     return headers;
@@ -41,11 +40,18 @@ sc_headers *sc_header_append(const char *header, sc_headers *list) {
 }
 
 void sc_headers_free(sc_headers *headers) {
-    while(headers) {
+    printf("Freeing headers\n");
+    while(headers != NULL) {
         sc_headers *next = headers->next;
-        free(headers->header);
+        sc_str_free(&headers->header);
         free(headers);
         headers = next;
     }
 }
 
+void sc_header_free(sc_headers *header) {
+    if (header != NULL) {
+        sc_str_free(&header->header);
+        free(header);
+    }
+}
