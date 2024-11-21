@@ -24,7 +24,7 @@ static void signal_handler(int sig) {
 }
 
 void root_handler(int fd, sc_http_msg msg, sc_headers *headers) {
-    char body[BODY_BUF] = "<html><h1>Hello, world! Your request:</h1>\0";
+    char body[BODY_BUF] = "<html><h1>Hello, world!</h1>\0";
     size_t body_size = strlen(body);
     
     sc_headers *current = headers;

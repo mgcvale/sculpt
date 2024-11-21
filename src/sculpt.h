@@ -13,6 +13,15 @@
 #include <sys/epoll.h>
 #include <fcntl.h>
 
+#define RETURN_ERROR_IF(condition, error_code, message) \
+    do { \
+        if (condition) { \
+            perror(message); \
+            return error_code; \
+        } \
+    } while (0)
+
+
 #define SC_OK 0
 #define SC_SOCKET_BIND_ERR -1
 #define SC_SOCKET_LISTEN_ERR -2
