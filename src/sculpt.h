@@ -185,9 +185,6 @@ int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_h
 int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*));
 
 
-
-
-
 // logging
 
 void sc_log(sc_conn_mgr *mgr, int ll, const char *format, ...);

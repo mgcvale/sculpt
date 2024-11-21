@@ -63,7 +63,7 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    rc = sc_mgr_conn_pool_init(mgr, 20);
+    rc = sc_mgr_conn_pool_init(mgr, 1);
     if (rc != SC_OK) {
         fprintf(stderr, "Error initializing connection pool: %d", rc);
         sc_mgr_finish(mgr);
@@ -77,7 +77,9 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    sc_mgr_bind_hard(mgr, "/root", root_handler);
+    sc_mgr_bind_hard(mgr, "/", root_handler);
+
+    sc_mgr_ll_set(mgr, SC_LL_NORMAL);
     
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
