@@ -135,12 +135,12 @@ int sc_easy_send(int fd, int code, const char *code_str, const char *content_typ
         return SC_MALLOC_ERR;
     }
 
+    printf("[Sculpt] sending request with sc_easy_send: %s", response);
     if (send(fd, response, strlen(response), 0) == -1) {
        return SC_SEND_ERR;
     }
 
     free(response);
     sc_headers_free(headers);
-
     return SC_OK;
 }

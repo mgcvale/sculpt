@@ -53,6 +53,7 @@
 #define METHOD_BUF_SIZE 16
 #define URL_BUF_SIZE 128
 #define SC_CONTINUE 1
+#define SC_BREAK 2
 #define SC_MAX_HEADER_ERROR_COUNT 12
 
 #define SC_LL_NONE 0
@@ -122,6 +123,7 @@ typedef struct sc_conn {
     int fd;
     time_t last_active;         // when connection was last used
     time_t creation_time;     // when connection was created
+    bool persistent;            // keep-alive in header
     enum {
         CONN_IDLE,
         CONN_ACTIVE,
@@ -154,7 +156,8 @@ typedef struct {
     // misc
     struct _endpoint_list *endpoints; //linked list of endpoints
     bool listening;     // flag to check listening status
-    int ll;
+    int ll;             // current log level
+    bool recycle_conns; // will recycle old connections when no avaliable is found;
 } sc_conn_mgr;
 
 sc_addr_info sc_addr_create(int sin_family, int port);
@@ -166,6 +169,7 @@ int sc_mgr_conn_pool_init(sc_conn_mgr *mgr, int max_conn);
 void sc_mgr_backlog_set(sc_conn_mgr *mgr, int backlog);
 void sc_mgr_epoll_maxevents_set(sc_conn_mgr *mgr, int maxevents);
 void sc_mgr_ll_set(sc_conn_mgr *mgr, int ll);
+void sc_mgr_conn_recycling_set(sc_conn_mgr *mgr, bool ll);
 
 void sc_mgr_finish(sc_conn_mgr *mgr);
 void sc_mgr_conn_pool_destroy(sc_conn_mgr *mgr);

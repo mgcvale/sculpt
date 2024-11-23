@@ -79,7 +79,8 @@ int main() {
 
     sc_mgr_bind_hard(mgr, "/", root_handler);
 
-    sc_mgr_ll_set(mgr, SC_LL_NORMAL);
+    sc_mgr_ll_set(mgr, SC_LL_DEBUG);
+    sc_mgr_conn_recycling_set(mgr, true);
     
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);

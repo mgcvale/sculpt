@@ -3,7 +3,6 @@
 #include <string.h>
 #include <netdb.h>
 #include <stdbool.h>
-#include <errno.h>
 #include <time.h>
 
 #include <sys/types.h>
@@ -42,7 +41,31 @@ int sc_mgr_conn_pool_init(sc_conn_mgr *mgr, int max_conns) {
 }
 
 sc_conn *sc_mgr_conn_get_free(sc_conn_mgr *mgr) {
-    if (mgr == NULL || mgr->conn_count >= mgr->max_conn_count) return NULL;
+    if (mgr == NULL) {
+        return NULL; 
+    }
+    if (mgr->conn_count >= mgr->max_conn_count) {
+        // all connections are being used.
+        // If the recycle_conns parameter is false, we return null. Else, we free the last active conn and return it.
+        if (!mgr->recycle_conns) {
+            return NULL; 
+        }
+        
+        sc_log(mgr, SC_LL_DEBUG, "All connections are being used; releasing the oldest inactive one.\n");
+        
+        sc_conn *oldest;
+        time_t oldest_time = time(NULL);
+        for (size_t i = 0; i < mgr->max_conn_count; i++) {
+            sc_conn *conn = &mgr->conn_pool[i];
+            if (conn->last_active < oldest_time) {
+                oldest_time = conn->last_active;
+                oldest = conn;
+            }
+        }
+
+        // release the oldest connection
+        sc_mgr_conn_release(mgr, oldest);
+    }
 
     // pop first free conn from list
     sc_conn *conn = mgr->free_conns;
@@ -54,6 +77,7 @@ sc_conn *sc_mgr_conn_get_free(sc_conn_mgr *mgr) {
     conn->last_active = current_time;
     conn->creation_time = current_time;
     conn->state = CONN_ACTIVE;
+    conn->persistent = false;
     conn->fd = -1; // fd will be invalid until it is set
 
     __atomic_fetch_add(&mgr->conn_count, 1, __ATOMIC_SEQ_CST);
@@ -63,15 +87,16 @@ sc_conn *sc_mgr_conn_get_free(sc_conn_mgr *mgr) {
 
 void sc_mgr_conn_release(sc_conn_mgr *mgr, sc_conn *conn) {
     if (!conn) return;
+    if (conn->state == CONN_CLOSING) return;
+
+    // add connection back to free connection stack
+    conn->next = mgr->free_conns;
+    mgr->free_conns = conn;
 
     // reset the connection
     conn->state = CONN_CLOSING;
     conn->last_active = time(NULL);
 
-    // add connection back to free connection stack
-    conn->next = mgr->free_conns;
-    mgr->free_conns = conn;
-    
     __atomic_fetch_sub(&mgr->conn_count, 1, __ATOMIC_SEQ_CST); // decrement the mgr conn count
 }
 

@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <string.h>
+#include <signal.h>
 
 sc_addr_info sc_addr_create(int sin_family, int port) {
     sc_addr_info addr_mgr;
@@ -21,6 +22,8 @@ sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
         return NULL;
     }
 
+    signal(SIGPIPE, SIG_IGN);
+
     mgr->addr_info = addr_mgr;
     mgr->backlog = SC_DEFAULT_BACKLOG;
     mgr->max_events = SC_DEFAULT_EPOLL_MAXEVENTS;
@@ -28,6 +31,7 @@ sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
     mgr->epoll_fd = -1;
     mgr->endpoints = NULL;
     mgr->ll = SC_LL_NORMAL;
+    mgr->recycle_conns = true;
 
     mgr->fd = socket(AF_INET, SOCK_STREAM, 0);
     if (mgr->fd < 0) {
@@ -68,6 +72,10 @@ void sc_mgr_epoll_maxevents_set(sc_conn_mgr *mgr, int maxevents) {
 
 void sc_mgr_ll_set(sc_conn_mgr *mgr, int ll) {
     mgr->ll = ll;
+}
+
+void sc_mgr_conn_recycling_set(sc_conn_mgr *mgr, bool recycle) {
+    mgr->recycle_conns = recycle;
 }
 
 int sc_mgr_listen(sc_conn_mgr *mgr) {

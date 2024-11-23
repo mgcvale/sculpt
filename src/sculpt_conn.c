@@ -106,11 +106,43 @@ static void return_500(sc_conn_mgr *mgr, sc_conn *conn) {
         "Content-Length: 21\r\n"
         "\r\n"
         "Internal Server Error";
-
      send(conn->fd, http_response_500, strlen(http_response_500), 0);
      close(conn->fd);
      sc_mgr_conn_release(mgr, conn);                    
      epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+}
+
+void epoll_readd_conn(sc_conn_mgr *mgr, sc_conn *conn) {
+    struct epoll_event event = {
+        .events = EPOLLIN | EPOLLRDHUP | EPOLLONESHOT,
+        .data.ptr = conn
+    };
+
+    if (epoll_ctl(mgr->epoll_fd, EPOLL_CTL_MOD, conn->fd, &event) == -1) {
+        sc_perror(mgr, SC_LL_NORMAL, "[Sculpt] Failed to re-add connection to epoll");
+        close(conn->fd);
+        sc_mgr_conn_release(mgr, conn);
+        epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, &event);
+    }
+}
+
+static void return_400(sc_conn_mgr *mgr, sc_conn *conn) {
+    const char *response = 
+        "HTTP/1.1 400 Bad Request\r\n"
+        "Content-Type: text/html; charset=UTF-8\r\n"
+        "Content-Length: 11\r\n"
+        "\r\n"
+        "Bad Request";
+
+    send(conn->fd, response, strlen(response), 0);
+
+    if (conn->persistent) {
+        epoll_readd_conn(mgr, conn);
+    } else {
+        sc_mgr_conn_release(mgr, conn);
+        close(conn->fd);
+        epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+    }
 }
 
 void cleanup_after_error(sc_conn_mgr *mgr, sc_conn *conn) {
@@ -157,7 +189,7 @@ int next_header(sc_conn_mgr *mgr, int fd, char *header, size_t buf_len) {
                 // we still have some header data read, but EOF is reached
                 return SC_OK; 
             }
-            return SC_FINISHED;
+            return SC_CONN_CLOSED;
         }
     }
 
@@ -169,15 +201,21 @@ int next_header(sc_conn_mgr *mgr, int fd, char *header, size_t buf_len) {
 }
 
 int get_http_msg(sc_conn_mgr *mgr, char *header, sc_http_msg *http_msg) {
-    RETURN_ERROR_IF(!http_msg, SC_BAD_ARGUMENTS_ERR, "[Sculpt] The http_msg pointer can't be null");
-    RETURN_ERROR_IF(!header, SC_BAD_ARGUMENTS_ERR, "[Sculpt] The sc_header pointer can't be null");
+    RETURN_ERROR_IF(!http_msg, SC_BAD_ARGUMENTS_ERR, "[Sculpt] The http_msg pointer can't be null\n");
+    RETURN_ERROR_IF(!header, SC_BAD_ARGUMENTS_ERR, "[Sculpt] The sc_header pointer can't be null\n");
  
+    sc_log(mgr, SC_LL_DEBUG, "Getting http msg on header: %s\n", header);
+
     const char *space = strchr(header, ' ');
-    RETURN_ERROR_IF(space == NULL, SC_MALFORMED_HEADER_ERR, "[Sculpt] The header passed to get_http_msg was malformed, as it was missing a space character");
-    
+    if (space == NULL) {
+        sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] The header passed to get_http_msg was malformed, as it was missing a space character\n");
+        return SC_MALFORMED_HEADER_ERR;
+    }
+
     // find method in header
     size_t method_len = space - header;
     if (method_len == 0 || method_len > METHOD_BUF_SIZE) {
+        sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] The header passed to get_http_msg was malformed, as it had a method that was too long\n");
         return SC_BUFFER_OVERFLOW_ERR;
     }
 
@@ -192,11 +230,13 @@ int get_http_msg(sc_conn_mgr *mgr, char *header, sc_http_msg *http_msg) {
     // find uri in header
     const char *uri_end = strchr(uri_start, ' ');
     if (!uri_end) {
+        sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] The header passed to get_http_msg was malformed, as it was missing a space character\n");
         return SC_MALFORMED_HEADER_ERR;
     }
 
     size_t uri_len = uri_end - uri_start;
     if (uri_len == 0 || uri_len > URL_BUF_SIZE) {
+        sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] The header passed to get_http_msg was malformed, as it had a uri that exceeded the max buffer size\n");
         return SC_BUFFER_OVERFLOW_ERR;
     }
 
@@ -210,7 +250,7 @@ int get_http_msg(sc_conn_mgr *mgr, char *header, sc_http_msg *http_msg) {
     return SC_OK;
 }
 
-static int parse_all_headers(sc_conn_mgr *mgr, sc_conn *conn, sc_headers **headers, sc_http_msg *http_msg, bool *keep_alive) {
+static int parse_all_headers(sc_conn_mgr *mgr, sc_conn *conn, sc_headers **headers, sc_http_msg *http_msg) {
 
     int err;
     // get and parse headers
@@ -218,16 +258,14 @@ static int parse_all_headers(sc_conn_mgr *mgr, sc_conn *conn, sc_headers **heade
     char header_buf[HEADER_BUF_SIZE] = {0};
     err = next_header(mgr, conn->fd, header_buf, HEADER_BUF_SIZE);
     if (err != SC_OK && err != SC_FINISHED) {
-        sc_error_log(mgr, SC_LL_MINIMAL, "[Sculpt] Critical: Error parsing request line header. Proceeding is impossible. Error code: %d\n", err); // will log on minimal because the error illed the entire request
-        cleanup_after_error(mgr, conn);
-        return SC_HEADER_PARSE_ERR;
+        sc_error_log(mgr, SC_LL_MINIMAL, "[Sculpt] Critical: Error parsing request line header. Proceeding is impossible. Error code: %d\n", err); // will log on minimal because the error killed the entire request
+        return err;
     }
 
     err = get_http_msg(mgr, header_buf, http_msg);
     if (err != SC_OK) {
-        sc_error_log(mgr, SC_LL_MINIMAL, "[Sculpt] Critical: error parsing URI and Method from HTTP request line. Proceeding is impossible. Error code: %d\n", err); 
-        cleanup_after_error(mgr, conn);
-        return SC_HEADER_PARSE_ERR;
+        sc_error_log(mgr, SC_LL_MINIMAL, "[Sculpt] Critical: error parsing URI and Method from HTTP request line. Proceeding is impossible. Returning error 400. Error code: %d\n", err);
+        return err;
     }
     sc_log(mgr, SC_LL_DEBUG, "HTTP MSG: %s, %s\n", http_msg->uri.buf, http_msg->method.buf);
 
@@ -253,13 +291,14 @@ static int parse_all_headers(sc_conn_mgr *mgr, sc_conn *conn, sc_headers **heade
         }
 
         if (strstr(header_buf, "Connection: keep-alive")) {
-            *keep_alive = true;
+            sc_log(mgr, SC_LL_DEBUG, "Found keep-alive header\n");
+            conn->persistent = true;
         }
 
         // add header to headers list
         *headers = sc_header_append(header_buf, *headers);
         if (headers == NULL) {
-            sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] Error appending new header to header list. Headers may be incomplete as a result.");
+            sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] Error appending new header to header list. Headers may be incomplete as a result.\n");
         }
 
         error_count = 0;
@@ -320,15 +359,29 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
             } // will not handle EPOLLRDHUP, as the header parsing function already handles EOF
 
             if (mgr->events[i].events & EPOLLIN) {
-                bool keep_alive = false;
                 conn->last_active = time(NULL);
                 
                 sc_headers *headers = NULL;
                 sc_http_msg http_msg;
-                int err = parse_all_headers(mgr, conn, &headers, &http_msg, &keep_alive);
-                if (err != SC_OK) {
+                int err = parse_all_headers(mgr, conn, &headers, &http_msg);
+                
+                if (err == SC_MALFORMED_HEADER_ERR || err == SC_BUFFER_OVERFLOW_ERR) {
+                    sc_error_log(mgr, SC_LL_DEBUG, "[Sculpt] Returning 400 due to malformed headers\n");
+                    return_400(mgr, conn);
                     sc_headers_free(headers);
-                }
+                    continue;
+                } else if (err == SC_CONN_CLOSED) {
+                    sc_log(mgr, SC_LL_NORMAL, "[Sculpt] Detected socket closing during header pasrsing; closing the connection with the client\n");
+                    epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+                    close(conn->fd);
+                    sc_mgr_conn_release(mgr, conn);
+                    continue;
+                } else if (err != SC_OK) {
+                    sc_error_log(mgr, SC_LL_DEBUG, "[Sculpt] Returning 500 dure to internal server error while getting headers\n"); 
+                    cleanup_after_error(mgr, conn);
+                    sc_headers_free(headers);
+                    continue;
+                } // the parse_all_headers frunction already logs everything
 
                 // log request
                 sc_log(mgr, SC_LL_NORMAL, "[Sculpt] Request: %s on %s\n", http_msg.method.buf, http_msg.uri.buf);
@@ -369,23 +422,14 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
 
                 end:
                     sc_headers_free(headers);
-                    if (!keep_alive) {
+                    if (!conn->persistent) {
                         sc_log(mgr, SC_LL_DEBUG, "[Sculpt] Connection close requested\n");
                         close(conn->fd);
                         sc_mgr_conn_release(mgr, conn);
                         epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
                     } else {
                         // re-add the connection to epoll for further requests
-                        struct epoll_event event = {
-                            .events = EPOLLIN | EPOLLRDHUP | EPOLLONESHOT,
-                            .data.ptr = conn
-                        };
-                        if (epoll_ctl(mgr->epoll_fd, EPOLL_CTL_MOD, conn->fd, &event) == -1) {
-                            sc_perror(mgr, SC_LL_NORMAL, "[Sculpt] Failed to re-add connection to epoll");
-                            close(conn->fd);
-                            sc_mgr_conn_release(mgr, conn);
-                            epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, &event);
-                        }
+                        epoll_readd_conn(mgr, conn);
                     }
 
                 // all other responsibilities are passed to the handler, so no need to do anything else
