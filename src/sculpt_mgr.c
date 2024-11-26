@@ -3,6 +3,8 @@
 #include <sys/socket.h>
 #include <string.h>
 #include <signal.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 sc_addr_info sc_addr_create(int sin_family, int port) {
     sc_addr_info addr_mgr;
@@ -84,6 +86,7 @@ int sc_mgr_listen(sc_conn_mgr *mgr) {
         return SC_SOCKET_LISTEN_ERR;
     }
 
+    printf("Binding to: %s:%d\n", inet_ntoa(mgr->addr_info._sock_addr.sin_addr), ntohs(mgr->addr_info._sock_addr.sin_port));
     int rc = getnameinfo((struct sockaddr *)&mgr->addr_info, sizeof(mgr->addr_info),
                         mgr->host_buf, sizeof(mgr->host_buf),
                         mgr->service_buf, sizeof(mgr->service_buf), 0);
@@ -93,7 +96,7 @@ int sc_mgr_listen(sc_conn_mgr *mgr) {
         return SC_SOCKET_GETNAMEINFO_ERR;
     }
 
-    sc_log(mgr, SC_LL_MINIMAL, "\n[Sculpt] Server is listening on http://%s%s:%d\n", mgr->host_buf, mgr->service_buf, mgr->addr_info.port);
+    sc_log(mgr, SC_LL_MINIMAL, "\n[Sculpt] Server is listening on http://%s:%d\n", mgr->host_buf, mgr->addr_info.port);
 
     mgr->listening = true;
     return SC_OK;

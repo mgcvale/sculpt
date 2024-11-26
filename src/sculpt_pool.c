@@ -48,6 +48,7 @@ sc_conn *sc_mgr_conn_get_free(sc_conn_mgr *mgr) {
         // all connections are being used.
         // If the recycle_conns parameter is false, we return null. Else, we free the last active conn and return it.
         if (!mgr->recycle_conns) {
+            sc_log(mgr, SC_LL_DEBUG, "recycle_conns is false; returning NULL on conn_get_free");
             return NULL; 
         }
         
@@ -64,6 +65,7 @@ sc_conn *sc_mgr_conn_get_free(sc_conn_mgr *mgr) {
         }
 
         // release the oldest connection
+        close(oldest->fd);
         sc_mgr_conn_release(mgr, oldest);
     }
 

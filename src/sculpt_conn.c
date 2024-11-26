@@ -45,8 +45,9 @@ static int create_new_connection(sc_conn_mgr *mgr) {
     socklen_t addr_len = sizeof(mgr->addr_info._sock_addr);
 
     // new connection, check capacity before proceeding
-    if (mgr->conn_count >= mgr->max_conn_count) {
-        sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] ERROR No avaliable connections found! Sending 503 response");
+    sc_conn *conn = sc_mgr_conn_get_free(mgr);
+    if (conn == NULL) {
+        sc_perror(mgr, SC_LL_NORMAL, "[Sculpt] ERROR No avaliable connections found! Sending 503 response");
         int client_fd = accept(mgr->fd, (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
         if (client_fd != -1) {
              static const char *msg = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 21\r\n\r\nServer at capacity\r\n";
@@ -57,12 +58,6 @@ static int create_new_connection(sc_conn_mgr *mgr) {
     }
 
     // try to find an unused connection
-    sc_conn *conn = sc_mgr_conn_get_free(mgr);
-    if (!conn) {
-        perror("[Sculpt] Failed to find free connection on sc_mgr_conn_get_free()\n");
-        return SC_CONTINUE;
-    }
-
     // valid connection was found, so we accept the request
      conn->fd = accept(mgr->fd, (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
 
