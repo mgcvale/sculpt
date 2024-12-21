@@ -106,7 +106,6 @@ void sc_mgr_finish(sc_conn_mgr *mgr) {
     if (!mgr) {
         return;
     }
-    int ll = mgr->ll;
 
     sc_mgr_conn_pool_destroy(mgr);
     sc_log(mgr, SC_LL_DEBUG, "[Sculpt]freed conn pool\n");

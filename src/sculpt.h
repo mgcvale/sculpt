@@ -51,6 +51,7 @@
 #define SC_ENDPOINT_LEN 256
 #define HEADER_BUF_SIZE 1024
 #define METHOD_BUF_SIZE 16
+#define VERSION_BUF_SIZE 10
 #define URL_BUF_SIZE 128
 #define SC_CONTINUE 1
 #define SC_BREAK 2
@@ -95,6 +96,7 @@ bool sc_strprefix(const sc_str str, const sc_str prefix);
 typedef struct {
     sc_str uri;
     sc_str method;
+    sc_str version;
 } sc_http_msg;
 
 /* struct to hold headers of a request */

@@ -26,6 +26,11 @@ static void signal_handler(int sig) {
 void root_handler(int fd, sc_http_msg msg, sc_headers *headers) {
     char body[BODY_BUF] = "<html><h1>Hello, world!</h1>\0";
     size_t body_size = strlen(body);
+
+    strncat(body, msg.method.buf, msg.method.len);
+    strncat(body, msg.uri.buf, msg.uri.len);
+    strncat(body, msg.version.buf, msg.version.len);
+    body_size += msg.method.len + msg.uri.len + msg.version.len;
     
     sc_headers *current = headers;
     while (current) {
@@ -37,6 +42,7 @@ void root_handler(int fd, sc_http_msg msg, sc_headers *headers) {
         current = current->next;
     }
     strncat(body, "</html>", 8);
+
     
     if (sc_easy_send(fd, 200, "OK", "Content-Type: text/html", body, NULL) == SC_OK) {
         printf("Response sent\n");
