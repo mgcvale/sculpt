@@ -24,7 +24,7 @@ void sc_log(sc_conn_mgr *mgr, int ll, const char *format, ...) {
 }
 
 void sc_error_log(sc_conn_mgr *mgr, int ll, const char *format, ...) {
-    if (ll == SC_LL_NONE || ll < mgr->ll) return;
+    if (ll == SC_LL_NONE || ll > mgr->ll) return;
 
     va_list args;
     va_start(args, format);
@@ -33,7 +33,7 @@ void sc_error_log(sc_conn_mgr *mgr, int ll, const char *format, ...) {
 }
 
 void sc_perror(sc_conn_mgr *mgr, int ll, const char *err) {
-    if (ll == SC_LL_NONE || ll < mgr->ll) return;
+    if (ll == SC_LL_NONE || ll > mgr->ll) return;
 
     perror(err);
 }
