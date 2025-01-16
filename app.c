@@ -34,6 +34,11 @@ static void signal_handler(int sig) {
 }
 
 void protocol_fallback(sc_conn_mgr *mgr, sc_conn *conn, sc_http_msg msg, sc_headers *headers, void *extra_data, int err) {
+    if (err == SC_CONN_CLOSE) { // if the handler requests a connection close, we do so
+        sc_mgr_conn_release(mgr, conn);
+        return;
+    }
+
     sc_error_log(mgr, SC_LL_MINIMAL, "Error code: %d\n", err);
     const char *response = "50000000021|Internal Server Error";
     send(conn->fd, response, strlen(response), 0);
@@ -70,7 +75,13 @@ int protocol_handler(sc_conn *conn, sc_http_msg *msg, sc_headers **headers, void
                 break;
             }
             uri_buf_size++;
+        } else if (bytes_read == 0) {
+            printf("[OPSC protocol] Connection sent 0 bytes, closing it\n");
+            free(*extra_data);
+            return SC_CONN_CLOSE; // signal to close the connection
         } else {
+            p_data->uri[uri_buf_size+1] = '\0';
+            printf("Error reading URI; URI read so far: %s\n", p_data->uri);
             free(*extra_data);
             return SC_READ_ERR;
         }
@@ -78,24 +89,36 @@ int protocol_handler(sc_conn *conn, sc_http_msg *msg, sc_headers **headers, void
 
     // parse method
     ssize_t bytes_read = read(conn->fd, &p_data->method, 1);
-    if (bytes_read != 1) {
+    if (bytes_read == 0) {
+        printf("[OPSC protocol] Connection sent 0 bytes, closing it\n");
+        free(*extra_data);
+        return SC_CONN_CLOSE;
+    } else if (bytes_read != 1) {
         free(*extra_data);
         return SC_READ_ERR;
-    }
+    } 
 
     // parse content-length
     char content_len_buf[8];
 
     bytes_read = read(conn->fd, content_len_buf, 8);
-    if (bytes_read != 8) {
+    if (bytes_read == 0) {
+        printf("[OPSC protocol] Connection sent 0 bytes, closing it\n");       
         free(*extra_data);
-        return SC_READ_ERR;
+        return SC_CONN_CLOSE;
+    } else if (bytes_read != 8) {
+        free(*extra_data);
+        return SC_MALFORMED_HEADER_ERR;
     }
     p_data->content_len = atoi(content_len_buf);
-    printf("%d\n", p_data->content_len);
 
+    // parses connection state
     bytes_read = read(conn->fd, &p_data->connection_state, 1);
-    if (bytes_read != 1) {
+    if (bytes_read == 0) {
+        printf("[OPSC protocol] Connection sent 0 bytes, sending close signal\n");  
+        free(*extra_data);
+        return SC_CONN_CLOSE;
+    } else if (bytes_read != 1) {
         free(*extra_data);
         return SC_READ_ERR;
     }
@@ -104,6 +127,13 @@ int protocol_handler(sc_conn *conn, sc_http_msg *msg, sc_headers **headers, void
     if (p_data->connection_state == 'C' || p_data->connection_state == 'c') {
         conn->persistent = false;
     }
+
+    // read divisor (|)
+
+    char buffer[1];
+    read(conn->fd, buffer, 1);
+    printf("Throwing out %c\n", buffer[0]);
+
 
     msg->method = sc_str_copy_n(&p_data->method, 1);
     msg->uri = sc_str_copy_n(p_data->uri, strlen(p_data->uri));
@@ -122,15 +152,48 @@ void root_handler(int fd, sc_http_msg msg, sc_headers *headers, void *extra_data
     
     char response[BODY_BUF];
     char body[BODY_BUF];
-    ssize_t bytes_read = read(fd, body, p_data->content_len);
-    if (bytes_read != p_data->content_len) {
+    ssize_t bytes_read = read(fd, body, p_data->content_len + 1);
+    if (bytes_read <= 0) {
+        printf("Bytes read: %lo\n", bytes_read);
         const char *response = "50000000021|Internal Server Error";
         send(fd, response, strlen(response), 0);
         return;
     }
+
+    // flush the fd for good measure
+    char buffer[1024];
+    while ((bytes_read = recv(fd, buffer, sizeof(buffer), 0)) > 0) {
+        // Discard data by doing nothing with `buffer`
+    }
+
+
+    body[bytes_read] = '\0';
     snprintf(response, BODY_BUF, "200%08d|body:%s;uri:%s;method:%c;content-len:%d;conn-state:%c", 321, body, p_data->uri, p_data->method, p_data->content_len, p_data->connection_state);
     printf("Sending response: %s\n", response);
     send(fd, response, strlen(response), 0);
+}
+
+
+void root_handler_http(int fd, sc_http_msg msg, sc_headers *headers, void *extra_data) {
+    char body[BODY_BUF] = "<html><h1>Hello, world! Your request:</h1>\0";
+    size_t body_size = strlen(body);
+    
+    sc_headers *current = headers;
+    while (current) {
+        body_size += current->header.len + 7;
+        if (body_size + 8 >= BODY_BUF) break; // 8 for the </html>
+        strncat(body, "<p>", 4);
+        strncat(body, current->header.buf, current->header.len);
+        strncat(body, "</p>", 5);
+        current = current->next;
+    }
+    strncat(body, "</html>", 8);
+    
+    if (sc_easy_send(fd, 200, "OK", "Content-Type: text/html", body, NULL) == SC_OK) {
+        printf("Response sent\n");
+    } else {
+        perror("Error sending response");
+    }
 }
 
 int main() {    
@@ -165,7 +228,7 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    sc_mgr_bind_hard(mgr, "/", root_handler);
+    sc_mgr_bind_soft(mgr, "/", root_handler);
 
     sc_mgr_ll_set(mgr, SC_LL_DEBUG);
     sc_mgr_conn_recycling_set(mgr, true);

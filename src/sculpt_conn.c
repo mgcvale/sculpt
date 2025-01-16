@@ -188,7 +188,7 @@ int next_header(sc_conn_mgr *mgr, int fd, char *header, size_t buf_len) {
                 break;
             }
             // an actual error occoured
-            sc_perror(mgr, SC_LL_NORMAL, "[Sculpt] Error reading body from client");
+            sc_perror(mgr, SC_LL_NORMAL, "[Sculpt] Error reading header from client\n");
             return SC_READ_ERR;
 
         } else if (bytes_read == 0) {
@@ -429,7 +429,7 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                     // if the protocol is not HTTP, we use the parser set in the mgr
                     int err = mgr->protocol_handler(conn, &http_msg, &headers, &extra_data);
                     if (err != SC_OK) {
-                        sc_error_log(mgr, SC_LL_DEBUG, "[Sculpt] Response code on protocol handler was not OK, calling protocol fallback function, ec: %d", err);
+                        sc_error_log(mgr, SC_LL_DEBUG, "[Sculpt] Response code on protocol handler was not OK, calling protocol fallback function. Error code: %d", err);
                         mgr->protocol_fallback(mgr, conn, http_msg, headers, extra_data, err);
                         continue;
                     }
