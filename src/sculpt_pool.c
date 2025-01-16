@@ -87,7 +87,7 @@ sc_conn *sc_mgr_conn_get_free(sc_conn_mgr *mgr) {
     return conn;
 }
 
-void sc_mgr_conn_release(sc_conn_mgr *mgr, sc_conn *conn) {
+void sc_mgr_conn_pool_release(sc_conn_mgr *mgr, sc_conn *conn) {
     if (!conn) return;
     if (conn->state == CONN_CLOSING) return;
 

@@ -15,6 +15,16 @@
 #define PORT 8000
 #define BACKLOG 128
 #define BODY_BUF 4096
+#define URI_BUF 128
+#define AUTH_BUF 128
+
+typedef struct custom_protocol_data {
+    char uri[URI_BUF];
+    char method;
+    int content_len;
+    char connection_state;
+    char auth[AUTH_BUF];
+} protocol_data;
 
 static bool s_exit_flag = false;
 
@@ -23,37 +33,109 @@ static void signal_handler(int sig) {
     s_exit_flag = true;
 }
 
-void root_handler(int fd, sc_http_msg msg, sc_headers *headers) {
-    char body[BODY_BUF] = "<html><h1>Hello, world!</h1>\0";
-    size_t body_size = strlen(body);
-
-    strncat(body, msg.method.buf, msg.method.len);
-    strncat(body, msg.uri.buf, msg.uri.len);
-    strncat(body, msg.version.buf, msg.version.len);
-    body_size += msg.method.len + msg.uri.len + msg.version.len;
-    
-    sc_headers *current = headers;
-    while (current) {
-        body_size += current->header.len + 7;
-        if (body_size + 8 >= BODY_BUF) break; // 8 for the </html>
-        strncat(body, "<p>", 4);
-        strncat(body, current->header.buf, current->header.len);
-        strncat(body, "</p>", 5);
-        current = current->next;
-    }
-    strncat(body, "</html>", 8);
-
-    
-    if (sc_easy_send(fd, 200, "OK", "Content-Type: text/html", body, NULL) == SC_OK) {
-        printf("Response sent\n");
+void protocol_fallback(sc_conn_mgr *mgr, sc_conn *conn, sc_http_msg msg, sc_headers *headers, void *extra_data, int err) {
+    sc_error_log(mgr, SC_LL_MINIMAL, "Error code: %d\n", err);
+    const char *response = "50000000021|Internal Server Error";
+    send(conn->fd, response, strlen(response), 0);
+    if (conn->persistent) {
+        sc_mgr_conn_readd(mgr, conn);
     } else {
-        perror("Error sending response");
+        sc_mgr_conn_release(mgr, conn);
     }
+}
+
+int protocol_handler(sc_conn *conn, sc_http_msg *msg, sc_headers **headers, void **extra_data) {
+    *extra_data = malloc(sizeof(protocol_data));
+    if (*extra_data == NULL) {
+        return SC_MALLOC_ERR;
+    }
+
+    protocol_data *p_data = (protocol_data*) *extra_data;  
+
+    size_t uri_buf_size = 0;
+    size_t auth_buf_size = 0;
+
+    // parse URI
+    while (1) {
+        if (uri_buf_size > URI_BUF - 1) {
+            free(*extra_data);
+            return SC_BUFFER_OVERFLOW_ERR;
+        }
+
+        ssize_t bytes_read = read(conn->fd, &p_data->uri[uri_buf_size], 1);
+        if (bytes_read > 0) {
+            if (p_data->uri[uri_buf_size] == '|') {
+                // we got to the end of the uri
+                p_data->uri[uri_buf_size] = '\0';
+                break;
+            }
+            uri_buf_size++;
+        } else {
+            free(*extra_data);
+            return SC_READ_ERR;
+        }
+    }
+
+    // parse method
+    ssize_t bytes_read = read(conn->fd, &p_data->method, 1);
+    if (bytes_read != 1) {
+        free(*extra_data);
+        return SC_READ_ERR;
+    }
+
+    // parse content-length
+    char content_len_buf[8];
+
+    bytes_read = read(conn->fd, content_len_buf, 8);
+    if (bytes_read != 8) {
+        free(*extra_data);
+        return SC_READ_ERR;
+    }
+    p_data->content_len = atoi(content_len_buf);
+    printf("%d\n", p_data->content_len);
+
+    bytes_read = read(conn->fd, &p_data->connection_state, 1);
+    if (bytes_read != 1) {
+        free(*extra_data);
+        return SC_READ_ERR;
+    }
+
+    conn->persistent = true;
+    if (p_data->connection_state == 'C' || p_data->connection_state == 'c') {
+        conn->persistent = false;
+    }
+
+    msg->method = sc_str_copy_n(&p_data->method, 1);
+    msg->uri = sc_str_copy_n(p_data->uri, strlen(p_data->uri));
+    msg->version = sc_str_copy_n("-1", 2);
+
+    return SC_OK;
+}
+
+void root_handler(int fd, sc_http_msg msg, sc_headers *headers, void *extra_data) {
+    protocol_data *p_data = (protocol_data*) extra_data;
+    size_t response_len = p_data->content_len + strlen(p_data->uri) + 10 + 12 + 200;
+    if (response_len >= BODY_BUF) {
+       send(fd, "40000000011|Bad Request", 23, 0);
+       return;
+    }
+    
+    char response[BODY_BUF];
+    char body[BODY_BUF];
+    ssize_t bytes_read = read(fd, body, p_data->content_len);
+    if (bytes_read != p_data->content_len) {
+        const char *response = "50000000021|Internal Server Error";
+        send(fd, response, strlen(response), 0);
+        return;
+    }
+    snprintf(response, BODY_BUF, "200%08d|body:%s;uri:%s;method:%c;content-len:%d;conn-state:%c", 321, body, p_data->uri, p_data->method, p_data->content_len, p_data->connection_state);
+    printf("Sending response: %s\n", response);
+    send(fd, response, strlen(response), 0);
 }
 
 int main() {    
     // create and setup socket    
-    sc_addr_info addr_info = sc_addr_create(AF_INET, 8000);
+    sc_addr_info addr_info = sc_addr_create(AF_INET, 8000, INADDR_ANY);
 
     int error;
     sc_conn_mgr *mgr = sc_mgr_create(addr_info, &error);
@@ -62,16 +144,16 @@ int main() {
         exit(EXIT_FAILURE);
     }
     
-    int rc = sc_mgr_epoll_init(mgr);
-    if (rc != SC_OK) {
-        fprintf(stderr, "Error initializing epoll: %d", rc);
+    error = sc_mgr_epoll_init(mgr);
+    if (error != SC_OK) {
+        fprintf(stderr, "Error initializing epoll: %d", error);
         sc_mgr_finish(mgr);
         exit(EXIT_FAILURE);
     }
 
-    rc = sc_mgr_conn_pool_init(mgr, 3);
-    if (rc != SC_OK) {
-        fprintf(stderr, "Error initializing connection pool: %d", rc);
+    error = sc_mgr_conn_pool_init(mgr, 3);
+    if (error != SC_OK) {
+        fprintf(stderr, "Error initializing connection pool: %d", error);
         sc_mgr_finish(mgr);
         exit(EXIT_FAILURE);
     }
@@ -87,6 +169,9 @@ int main() {
 
     sc_mgr_ll_set(mgr, SC_LL_DEBUG);
     sc_mgr_conn_recycling_set(mgr, true);
+    mgr->protocol = SC_PROTOCOL_CUSTOM;
+    mgr->protocol_handler = protocol_handler;
+    mgr->protocol_fallback = protocol_fallback;
     
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);

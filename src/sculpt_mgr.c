@@ -6,11 +6,11 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-sc_addr_info sc_addr_create(int sin_family, int port) {
+sc_addr_info sc_addr_create(int sin_family, int port, int inaddr) {
     sc_addr_info addr_mgr;
     addr_mgr._sock_addr.sin_family = sin_family;
     addr_mgr._sock_addr.sin_port = htons(port);
-    addr_mgr._sock_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr_mgr._sock_addr.sin_addr.s_addr = htonl(inaddr);
     addr_mgr.port = port;
     return addr_mgr;
 }
@@ -34,6 +34,7 @@ sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
     mgr->endpoints = NULL;
     mgr->ll = SC_LL_NORMAL;
     mgr->recycle_conns = true;
+    mgr->protocol = SC_PROTOCOL_HTTP;
 
     mgr->fd = socket(AF_INET, SOCK_STREAM, 0);
     if (mgr->fd < 0) {
@@ -137,7 +138,7 @@ void sc_mgr_finish(sc_conn_mgr *mgr) {
     free(mgr);
 }
 
-struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *endpoint, bool soft, void (*func)(int, sc_http_msg, sc_headers*)) {
+struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *endpoint, bool soft, void (*func)(int, sc_http_msg, sc_headers*, void*)) {
     struct _endpoint_list *new = malloc(sizeof(struct _endpoint_list));
     if (new == NULL) {
         return NULL;
@@ -151,7 +152,7 @@ struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *en
     return new;
 }
 
-int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*)) {
+int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*, void*)) {
     mgr->endpoints = _endpoint_add(mgr->endpoints, endpoint, false, f);
     if (mgr->endpoints == NULL) {
        return SC_MALLOC_ERR;
@@ -159,7 +160,7 @@ int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_h
     return SC_OK;
 }
 
-int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*)) {
+int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*, void*)) {
     mgr->endpoints = _endpoint_add(mgr->endpoints, endpoint, true, f);
     sc_log(mgr, SC_LL_DEBUG, "[Sculpt]Endpoint added: %s", mgr->endpoints->val.buf);
     if (mgr->endpoints == NULL) {
