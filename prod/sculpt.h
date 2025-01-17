@@ -13,6 +13,15 @@
 #include <sys/epoll.h>
 #include <fcntl.h>
 
+#define RETURN_ERROR_IF(condition, error_code, message) \
+    do { \
+        if (condition) { \
+            perror(message); \
+            return error_code; \
+        } \
+    } while (0)
+
+
 #define SC_OK 0
 #define SC_SOCKET_BIND_ERR -1
 #define SC_SOCKET_LISTEN_ERR -2
@@ -32,6 +41,7 @@
 #define SC_FINISHED -16
 #define SC_BUFFER_OVERFLOW_ERR -17
 #define SC_MALFORMED_HEADER_ERR -18
+#define SC_CONN_CLOSE -19
 
 #define SC_DEFAULT_BACKLOG 128
 #define SC_DEFAULT_EPOLL_MAXEVENTS 12
@@ -42,14 +52,19 @@
 #define SC_ENDPOINT_LEN 256
 #define HEADER_BUF_SIZE 1024
 #define METHOD_BUF_SIZE 16
+#define VERSION_BUF_SIZE 10
 #define URL_BUF_SIZE 128
 #define SC_CONTINUE 1
+#define SC_BREAK 2
 #define SC_MAX_HEADER_ERROR_COUNT 12
 
 #define SC_LL_NONE 0
 #define SC_LL_MINIMAL 1
 #define SC_LL_NORMAL 2
 #define SC_LL_DEBUG 3
+
+#define SC_PROTOCOL_HTTP 1
+#define SC_PROTOCOL_CUSTOM 2
 
 // utils
 
@@ -85,6 +100,7 @@ bool sc_strprefix(const sc_str str, const sc_str prefix);
 typedef struct {
     sc_str uri;
     sc_str method;
+    sc_str version;
 } sc_http_msg;
 
 /* struct to hold headers of a request */
@@ -111,8 +127,9 @@ typedef struct {
 
 typedef struct sc_conn {
     int fd;
-    time_t last_active;         // when connection was last used
+    time_t last_active;       // when connection was last used
     time_t creation_time;     // when connection was created
+    bool persistent;          // keep-alive in header
     enum {
         CONN_IDLE,
         CONN_ACTIVE,
@@ -121,7 +138,7 @@ typedef struct sc_conn {
     struct sc_conn *next;
 } sc_conn;
 
-typedef struct {
+typedef struct _sc_mgr {
     sc_addr_info addr_info;         
     int fd;                         // server file descriptor
     int backlog;                    // server backlog count
@@ -145,24 +162,31 @@ typedef struct {
     // misc
     struct _endpoint_list *endpoints; //linked list of endpoints
     bool listening;     // flag to check listening status
-    int ll;
+    int ll;             // current log level
+    bool recycle_conns; // will recycle old connections when no avaliable is found;
+    int protocol;       // current protocol being used (either HTTP or a custom one, HTTP by default)
+    int (*protocol_handler)(sc_conn*, sc_http_msg*, sc_headers**, void**);  // function used to handle protocol header parsing (or equivalent)
+    void (*protocol_fallback)(struct _sc_mgr *mgr, sc_conn*, sc_http_msg, sc_headers*, void*, int); // fallback function that will be called when protocl_handler fails
 } sc_conn_mgr;
 
-sc_addr_info sc_addr_create(int sin_family, int port);
+sc_addr_info sc_addr_create(int sin_family, int port, int inaddr);
 sc_conn_mgr *sc_mgr_create(sc_addr_info mgr, int *err);
 int sc_mgr_listen(sc_conn_mgr *mgr);
 int sc_mgr_epoll_init(sc_conn_mgr *mgr);
 int sc_mgr_conn_pool_init(sc_conn_mgr *mgr, int max_conn);
+void sc_mgr_conn_readd(sc_conn_mgr *mgr, sc_conn *conn);
+void sc_mgr_conn_release(sc_conn_mgr *mgr, sc_conn *conn);
 
 void sc_mgr_backlog_set(sc_conn_mgr *mgr, int backlog);
 void sc_mgr_epoll_maxevents_set(sc_conn_mgr *mgr, int maxevents);
 void sc_mgr_ll_set(sc_conn_mgr *mgr, int ll);
+void sc_mgr_conn_recycling_set(sc_conn_mgr *mgr, bool ll);
 
 void sc_mgr_finish(sc_conn_mgr *mgr);
 void sc_mgr_conn_pool_destroy(sc_conn_mgr *mgr);
 
 sc_conn *sc_mgr_conn_get_free(sc_conn_mgr *mgr);
-void sc_mgr_conn_release(sc_conn_mgr *mgr, sc_conn *conn);
+void sc_mgr_conn_pool_release(sc_conn_mgr *mgr, sc_conn *conn);
 void sc_mgr_conns_cleanup(sc_conn_mgr *mgr);
 
 int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms);
@@ -175,17 +199,14 @@ int sc_easy_send2(int fd, int code, const char *code_str, const char *body, sc_h
 
 struct _endpoint_list {
     sc_str val;
-    void (*func)(int, sc_http_msg, sc_headers*);
+    void (*func)(int, sc_http_msg, sc_headers*, void*);
     bool soft;
     struct _endpoint_list *next;
 };
 
-struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *endpoint, bool soft, void (*func)(int, sc_http_msg, sc_headers*));
-int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*));
-int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*));
-
-
-
+struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *endpoint, bool soft, void (*func)(int, sc_http_msg, sc_headers*, void*));
+int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*, void*));
+int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*, void*));
 
 
 // logging

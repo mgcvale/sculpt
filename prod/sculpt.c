@@ -3,13 +3,13 @@
 
 // Start of ../src/sculpt_util.c
 #include <stdlib.h>
+
 #include <string.h>
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdarg.h>
 
 #include "sculpt.h"
-
 
 const char *http_template = "HTTP/1.1 %d %s\r\n"
     "Content-Length: %zu\r\n"
@@ -18,9 +18,8 @@ const char *http_template = "HTTP/1.1 %d %s\r\n"
 // logging
 void sc_log(sc_conn_mgr *mgr, int ll, const char *format, ...) {
     // only log if the current log level (ll) is equal or higher than the requested one (level)
-    // exapmle: ll = SC_LL_NORMAL (2), level = SC_LL_MINIMAL (1) -> we log;
-    // ll = SC_LL_MINIMAL (1), level = SC_LL_NORMAL (2) -> we DON'T log;
-    if (ll == SC_LL_NONE || ll < mgr->ll) return;
+    // 
+    if (ll == SC_LL_NONE || ll > mgr->ll) return;
 
     va_list args;
     va_start(args, format);
@@ -29,7 +28,7 @@ void sc_log(sc_conn_mgr *mgr, int ll, const char *format, ...) {
 }
 
 void sc_error_log(sc_conn_mgr *mgr, int ll, const char *format, ...) {
-    if (ll == SC_LL_NONE || ll < mgr->ll) return;
+    if (ll == SC_LL_NONE || ll > mgr->ll) return;
 
     va_list args;
     va_start(args, format);
@@ -38,7 +37,7 @@ void sc_error_log(sc_conn_mgr *mgr, int ll, const char *format, ...) {
 }
 
 void sc_perror(sc_conn_mgr *mgr, int ll, const char *err) {
-    if (ll == SC_LL_NONE || ll < mgr->ll) return;
+    if (ll == SC_LL_NONE || ll > mgr->ll) return;
 
     perror(err);
 }
@@ -140,17 +139,160 @@ int sc_easy_send(int fd, int code, const char *code_str, const char *content_typ
         return SC_MALLOC_ERR;
     }
 
+    printf("[Sculpt] sending request with sc_easy_send: %s", response);
     if (send(fd, response, strlen(response), 0) == -1) {
        return SC_SEND_ERR;
     }
 
     free(response);
     sc_headers_free(headers);
-
     return SC_OK;
 }
 
 // End of ../src/sculpt_util.c
+
+// Start of ../src/sculpt_pool.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <netdb.h>
+#include <stdbool.h>
+#include <time.h>
+
+#include <sys/types.h>
+#include <unistd.h>
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+
+#include "sculpt.h"
+
+
+int sc_mgr_conn_pool_init(sc_conn_mgr *mgr, int max_conns) {
+    RETURN_ERROR_IF(!mgr, SC_BAD_ARGUMENTS_ERR, "[Sculpt] NULL manager provided");
+
+    mgr->max_conn_count = max_conns;
+    mgr->conn_count = 0;
+
+    mgr->conn_pool = calloc(max_conns, sizeof(sc_conn));
+    if (mgr->conn_pool == NULL) {
+        return SC_MALLOC_ERR;
+    }
+
+    mgr->free_conns = &mgr->conn_pool[0]; // free conns will be the same as con poolat the start
+    // link list until max_conns - 1 to avoid segfault
+    for(int i = 0; i < max_conns - 1; i++) {
+        mgr->conn_pool[i].next = &mgr->conn_pool[i + 1];
+        mgr->conn_pool[i].state = CONN_IDLE;
+    }
+    mgr->conn_pool[max_conns - 1].next = NULL;
+    mgr->conn_pool[max_conns - 1].state = CONN_IDLE;
+
+    mgr->conn_timeout = SC_DEFAULT_CONN_TIMEOUT;
+    mgr->conn_max_age = SC_DEFAULT_CONN_MAX_AGE;
+
+    return SC_OK;
+}
+
+sc_conn *sc_mgr_conn_get_free(sc_conn_mgr *mgr) {
+    if (mgr == NULL) {
+        return NULL; 
+    }
+    if (mgr->conn_count >= mgr->max_conn_count) {
+        // all connections are being used.
+        // If the recycle_conns parameter is false, we return null. Else, we free the last active conn and return it.
+        if (!mgr->recycle_conns) {
+            sc_log(mgr, SC_LL_DEBUG, "recycle_conns is false; returning NULL on conn_get_free");
+            return NULL; 
+        }
+        
+        sc_log(mgr, SC_LL_DEBUG, "All connections are being used; releasing the oldest inactive one.\n");
+        
+        sc_conn *oldest;
+        time_t oldest_time = time(NULL);
+        for (size_t i = 0; i < mgr->max_conn_count; i++) {
+            sc_conn *conn = &mgr->conn_pool[i];
+            if (conn->last_active < oldest_time) {
+                oldest_time = conn->last_active;
+                oldest = conn;
+            }
+        }
+
+        // release the oldest connection
+        close(oldest->fd);
+        sc_mgr_conn_release(mgr, oldest);
+    }
+
+    // pop first free conn from list
+    sc_conn *conn = mgr->free_conns;
+    mgr->free_conns = mgr->free_conns->next;
+
+    // clear previous conn state
+    // init new conn
+    time_t current_time = time(NULL);
+    conn->last_active = current_time;
+    conn->creation_time = current_time;
+    conn->state = CONN_ACTIVE;
+    conn->persistent = false;
+    conn->fd = -1; // fd will be invalid until it is set
+
+    __atomic_fetch_add(&mgr->conn_count, 1, __ATOMIC_SEQ_CST);
+
+    return conn;
+}
+
+void sc_mgr_conn_pool_release(sc_conn_mgr *mgr, sc_conn *conn) {
+    if (!conn) return;
+    if (conn->state == CONN_CLOSING) return;
+
+    // add connection back to free connection stack
+    conn->next = mgr->free_conns;
+    mgr->free_conns = conn;
+
+    // reset the connection
+    conn->state = CONN_CLOSING;
+    conn->last_active = time(NULL);
+
+    __atomic_fetch_sub(&mgr->conn_count, 1, __ATOMIC_SEQ_CST); // decrement the mgr conn count
+}
+
+void sc_mgr_conns_cleanup(sc_conn_mgr *mgr) {
+    time_t now = time(NULL);
+
+    for (size_t i = 0; i < mgr->max_conn_count; i++) {
+        sc_conn *conn = &mgr->conn_pool[i];
+        
+        // check time limits
+        if ((CONN_ACTIVE == conn->state) &&
+        (now - conn->last_active > mgr->conn_timeout || now - conn->creation_time > mgr->conn_max_age)) {
+            
+            // close the fd
+            shutdown(conn->fd, SHUT_RDWR);
+            close(conn->fd);
+            epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+            sc_mgr_conn_release(mgr, conn);
+        }
+    }
+}
+
+void sc_mgr_conn_pool_destroy(sc_conn_mgr *mgr) {
+    // close all active connections from array
+    for (int i = 0; i < mgr->max_conn_count; i++) {
+        sc_conn *conn = &mgr->conn_pool[i];
+        if (conn->state == CONN_ACTIVE) {
+            close(conn->fd);
+        }
+        //free(conn);
+    }
+    
+    // free pools
+    free(mgr->conn_pool);
+    mgr->conn_pool = NULL;
+    mgr->free_conns = NULL;
+
+}
+
+// End of ../src/sculpt_pool.c
 
 // Start of ../src/sculpt_header.c
 #include <stdio.h>
@@ -195,7 +337,6 @@ sc_headers *sc_header_append(const char *header, sc_headers *list) {
 }
 
 void sc_headers_free(sc_headers *headers) {
-    printf("Freeing headers\n");
     while(headers != NULL) {
         sc_headers *next = headers->next;
         sc_str_free(&headers->header);
@@ -213,6 +354,180 @@ void sc_header_free(sc_headers *header) {
 
 // End of ../src/sculpt_header.c
 
+// Start of ../src/sculpt_mgr.c
+#include "sculpt.h"
+#include <stdlib.h>
+#include <sys/socket.h>
+#include <string.h>
+#include <signal.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+sc_addr_info sc_addr_create(int sin_family, int port, int inaddr) {
+    sc_addr_info addr_mgr;
+    addr_mgr._sock_addr.sin_family = sin_family;
+    addr_mgr._sock_addr.sin_port = htons(port);
+    addr_mgr._sock_addr.sin_addr.s_addr = htonl(inaddr);
+    addr_mgr.port = port;
+    return addr_mgr;
+}
+
+sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
+    *err = SC_OK;
+    sc_conn_mgr *mgr = malloc(sizeof(sc_conn_mgr));
+    if (mgr == NULL) {
+        perror("[Sculpt] Error: memory allocation for sc_conn_mgr");
+        *err = SC_MALLOC_ERR;
+        return NULL;
+    }
+
+    signal(SIGPIPE, SIG_IGN);
+
+    mgr->addr_info = addr_mgr;
+    mgr->backlog = SC_DEFAULT_BACKLOG;
+    mgr->max_events = SC_DEFAULT_EPOLL_MAXEVENTS;
+    mgr->listening = false;
+    mgr->epoll_fd = -1;
+    mgr->endpoints = NULL;
+    mgr->ll = SC_LL_NORMAL;
+    mgr->recycle_conns = true;
+    mgr->protocol = SC_PROTOCOL_HTTP;
+
+    mgr->fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (mgr->fd < 0) {
+        sc_perror(mgr, SC_LL_MINIMAL, "[Sculpt] Error: error creating socket for conn_mgr");
+        free(mgr);
+        *err = SC_SOCKET_CREATION_ERR;
+        return NULL;
+    }
+    
+    int opt = 1;
+    if (setsockopt(mgr->fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(int)) < 0) {
+        sc_perror(mgr, SC_LL_MINIMAL, "[Sculpt] Error: failed to set socket options");
+        *err = SC_SOCKET_SETOPT_ERR;
+        goto error;
+    }
+
+    if (bind(mgr->fd, (struct sockaddr *)&mgr->addr_info, sizeof(mgr->addr_info))) {
+        sc_perror(mgr, SC_LL_MINIMAL, "[Sculpt] Error: Failed to bind server to the address");
+        *err = SC_SOCKET_BIND_ERR;
+        goto error;
+    }
+
+    return mgr;
+
+    error:
+        close(mgr->fd);
+        free(mgr);
+        return NULL;
+}
+
+void sc_mgr_backlog_set(sc_conn_mgr *mgr, int backlog) {
+    mgr->backlog = backlog;
+}
+
+void sc_mgr_epoll_maxevents_set(sc_conn_mgr *mgr, int maxevents) {
+    mgr->max_events = maxevents;
+}
+
+void sc_mgr_ll_set(sc_conn_mgr *mgr, int ll) {
+    mgr->ll = ll;
+}
+
+void sc_mgr_conn_recycling_set(sc_conn_mgr *mgr, bool recycle) {
+    mgr->recycle_conns = recycle;
+}
+
+int sc_mgr_listen(sc_conn_mgr *mgr) {
+    if (listen(mgr->fd, mgr->backlog) < 0) {
+        perror("Error: error in listen()");
+        return SC_SOCKET_LISTEN_ERR;
+    }
+
+    printf("Binding to: %s:%d\n", inet_ntoa(mgr->addr_info._sock_addr.sin_addr), ntohs(mgr->addr_info._sock_addr.sin_port));
+    int rc = getnameinfo((struct sockaddr *)&mgr->addr_info, sizeof(mgr->addr_info),
+                        mgr->host_buf, sizeof(mgr->host_buf),
+                        mgr->service_buf, sizeof(mgr->service_buf), 0);
+    if (rc != 0) {
+        sc_error_log(mgr, SC_LL_MINIMAL, "[Sculpt] Warning: %s; ", gai_strerror(rc));
+        sc_error_log(mgr, SC_LL_MINIMAL, "Server is listening on unknown URL\n");
+        return SC_SOCKET_GETNAMEINFO_ERR;
+    }
+
+    sc_log(mgr, SC_LL_MINIMAL, "\n[Sculpt] Server is listening on http://%s:%d\n", mgr->host_buf, mgr->addr_info.port);
+
+    mgr->listening = true;
+    return SC_OK;
+}
+
+void sc_mgr_finish(sc_conn_mgr *mgr) {
+    if (!mgr) {
+        return;
+    }
+
+    sc_mgr_conn_pool_destroy(mgr);
+    sc_log(mgr, SC_LL_DEBUG, "[Sculpt]freed conn pool\n");
+
+    // close epoll fd and free events array
+    if (mgr->epoll_fd >= 0) {
+        close(mgr->epoll_fd);
+        mgr->epoll_fd = -1;
+    }
+    free(mgr->events);
+    mgr->events = NULL; // !! dangling pointers
+
+    sc_log(mgr, SC_LL_DEBUG, "[Sculpt] freed epoll\n");
+
+    // close server socket
+    if (mgr->fd >= 0) {
+        close(mgr->fd);
+        mgr->fd = -1;
+    }
+    sc_log(mgr, SC_LL_DEBUG, "[Sculpt]freed server socket\n");
+    
+
+    // free endpoints list
+    while(mgr->endpoints) {
+        struct _endpoint_list *next = mgr->endpoints->next;
+        free(mgr->endpoints);
+        mgr->endpoints = next;
+    }
+    free(mgr);
+}
+
+struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *endpoint, bool soft, void (*func)(int, sc_http_msg, sc_headers*, void*)) {
+    struct _endpoint_list *new = malloc(sizeof(struct _endpoint_list));
+    if (new == NULL) {
+        return NULL;
+    }
+
+    new->soft = soft;
+    new->func = func;
+    sc_str val = sc_str_ref_n(endpoint, strlen(endpoint));
+    new->val = val;
+    new->next = list;
+    return new;
+}
+
+int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*, void*)) {
+    mgr->endpoints = _endpoint_add(mgr->endpoints, endpoint, false, f);
+    if (mgr->endpoints == NULL) {
+       return SC_MALLOC_ERR;
+    }
+    return SC_OK;
+}
+
+int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*, void*)) {
+    mgr->endpoints = _endpoint_add(mgr->endpoints, endpoint, true, f);
+    sc_log(mgr, SC_LL_DEBUG, "[Sculpt]Endpoint added: %s", mgr->endpoints->val.buf);
+    if (mgr->endpoints == NULL) {
+        return SC_MALLOC_ERR;
+    }
+    return SC_OK;
+}
+
+// End of ../src/sculpt_mgr.c
+
 // Start of ../src/sculpt_conn.c
 #include <stdio.h>
 #include <stdlib.h>
@@ -229,14 +544,6 @@ void sc_header_free(sc_headers *header) {
 #include <netinet/in.h>
 
 #include "sculpt.h"
-
-#define RETURN_ERROR_IF(condition, error_code, message) \
-    do { \
-        if (condition) { \
-            perror(message); \
-            return error_code; \
-        } \
-    } while (0)
 
 #define SC_HEADER_PARSE_ERR -256
 #define SC_HEADER_PARSE_INCOMPLETE_ERR -257
@@ -264,12 +571,14 @@ int sc_mgr_epoll_init(sc_conn_mgr *mgr) {
 }
 
 static int create_new_connection(sc_conn_mgr *mgr) {
-    fprintf(stdout, "[Sculpt] Creating new connection\n");
+    RETURN_ERROR_IF(!mgr, SC_BAD_ARGUMENTS_ERR, "[Sculpt] NULL manager provided");
+    sc_log(mgr, SC_LL_DEBUG,  "[Sculpt] INFO Creating new connection\n"); 
     socklen_t addr_len = sizeof(mgr->addr_info._sock_addr);
 
     // new connection, check capacity before proceeding
-    if (mgr->conn_count >= mgr->max_conn_count) {
-        perror("[Sculpt] No avaliable connections found! Sending 503 response");
+    sc_conn *conn = sc_mgr_conn_get_free(mgr);
+    if (conn == NULL) {
+        sc_perror(mgr, SC_LL_NORMAL, "[Sculpt] ERROR No avaliable connections found! Sending 503 response");
         int client_fd = accept(mgr->fd, (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
         if (client_fd != -1) {
              static const char *msg = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 21\r\n\r\nServer at capacity\r\n";
@@ -279,21 +588,14 @@ static int create_new_connection(sc_conn_mgr *mgr) {
         return SC_CONTINUE;
     }
 
-    // try to find an unused connection
-    sc_conn *conn = sc_mgr_conn_get_free(mgr);
-    if (!conn) {
-        perror("[Sculpt] Failed to find free connection on sc_mgr_conn_get_free()\n");
-        return SC_CONTINUE;
-    }
-
     // valid connection was found, so we accept the request
      conn->fd = accept(mgr->fd, (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
 
     if (conn->fd == -1) {
-        perror("[Sculpt] Error on Accept. Checking severity\n");
-        sc_mgr_conn_release(mgr, conn);
-        if (errno != EAGAIN && errno != EWOULDBLOCK) { // if the error is not because it would block or cuz it is unacailable, we don't return the function
-            fprintf(stderr, "[Sculpt] Fatal: Accept error: %d\n", errno);
+        sc_perror(mgr,  SC_LL_NORMAL, "[Sculpt] Error on Accept. Checking severity\n");
+        sc_mgr_conn_pool_release(mgr, conn);
+        if (errno != EAGAIN && errno != EWOULDBLOCK) { // if the error is not because it would block or cuz it is unavailable, we don't return the function
+            sc_perror(mgr, SC_LL_DEBUG, "[Scupt] Accept error:");  
             return SC_ACCEPT_ERR;
         }
         return SC_CONTINUE;
@@ -301,8 +603,8 @@ static int create_new_connection(sc_conn_mgr *mgr) {
 
     // set connection as non-blocking because we used accept instead of accept4
     if (fcntl(conn->fd, F_SETFL, fcntl(conn->fd, F_GETFL) | O_NONBLOCK) == -1) {
-        perror("Error setting non-blocking mode");
-        sc_mgr_conn_release(mgr, conn);
+        sc_perror(mgr, SC_LL_NORMAL, "Error setting non-blocking mode");
+        sc_mgr_conn_pool_release(mgr, conn);
         close(conn->fd);
         return SC_CONTINUE;
     }  
@@ -314,8 +616,8 @@ static int create_new_connection(sc_conn_mgr *mgr) {
 
     // add the event to epoll 
     if (epoll_ctl(mgr->epoll_fd, EPOLL_CTL_ADD, conn->fd, &event) == -1) {
-        perror("[Sculpt] Failed to add connection to epoll");
-        sc_mgr_conn_release(mgr, conn);
+        sc_perror(mgr, SC_LL_NORMAL, "[Sculpt] Failed to add connection to epoll");
+        sc_mgr_conn_pool_release(mgr, conn);
         close(conn->fd);
         return SC_CONTINUE;
     }
@@ -329,29 +631,74 @@ static void return_500(sc_conn_mgr *mgr, sc_conn *conn) {
         "Content-Length: 21\r\n"
         "\r\n"
         "Internal Server Error";
-
      send(conn->fd, http_response_500, strlen(http_response_500), 0);
      close(conn->fd);
-     sc_mgr_conn_release(mgr, conn);                    
+     sc_mgr_conn_pool_release(mgr, conn);                    
      epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
 }
 
-void cleanup_after_error(sc_conn_mgr *mgr, sc_conn *conn) {
-    if (conn) {
-        return_500(mgr, conn);
-        sc_mgr_conn_release(mgr, conn);
+void epoll_readd_conn(sc_conn_mgr *mgr, sc_conn *conn) {
+    struct epoll_event event = {
+        .events = EPOLLIN | EPOLLRDHUP | EPOLLONESHOT,
+        .data.ptr = conn
+    };
+
+    if (epoll_ctl(mgr->epoll_fd, EPOLL_CTL_MOD, conn->fd, &event) == -1) {
+        sc_perror(mgr, SC_LL_NORMAL, "[Sculpt] Failed to re-add connection to epoll");
+        close(conn->fd);
+        sc_mgr_conn_pool_release(mgr, conn);
+        epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, &event);
+    }
+}
+
+void sc_mgr_conn_readd(sc_conn_mgr *mgr, sc_conn *conn) {
+    epoll_readd_conn(mgr, conn);
+}
+
+void sc_mgr_conn_release(sc_conn_mgr *mgr, sc_conn *conn) {
+    close(conn->fd);
+    sc_mgr_conn_pool_release(mgr, conn);
+    epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+}
+
+static void return_400(sc_conn_mgr *mgr, sc_conn *conn) {
+    const char *response = 
+        "HTTP/1.1 400 Bad Request\r\n"
+        "Content-Type: text/html; charset=UTF-8\r\n"
+        "Content-Length: 11\r\n"
+        "\r\n"
+        "Bad Request";
+
+    send(conn->fd, response, strlen(response), 0);
+
+    if (conn->persistent) {
+        epoll_readd_conn(mgr, conn);
+    } else {
+        sc_mgr_conn_pool_release(mgr, conn);
         close(conn->fd);
         epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
     }
 }
 
-int next_header(int fd, char *header, size_t buf_len) {
+void cleanup_after_error(sc_conn_mgr *mgr, sc_conn *conn) {
+    if (conn) {
+        return_500(mgr, conn);
+        sc_mgr_conn_pool_release(mgr, conn);
+        close(conn->fd);
+        epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+    }
+}
+
+// here, I will read the headers byte by byte.
+// This is to avoid reading into the body of the request - as this will be something that the user will handle, not us.
+// Because the headers should be relatively small in a typical HTTP request, this shouldn't present a performance issue to the program.
+int next_header(sc_conn_mgr *mgr, int fd, char *header, size_t buf_len) {
     header[0] = '\0';
     size_t header_len = 0;
     char last_char = '\0';
 
     while (1) {
-        if (header_len >= buf_len - 1) { // stop if the header is larger than the buffer
+        if (header_len > buf_len) { // stop if the header is larger than the buffer
             return SC_BUFFER_OVERFLOW_ERR;
         }
 
@@ -360,27 +707,28 @@ int next_header(int fd, char *header, size_t buf_len) {
             if (last_char == '\r' && header[header_len] == '\n') {
                 // we got to the end of the header
                 header[header_len - 1] = '\0';
-                header_len --;
+                header_len--;
                 break;
             }
             last_char = header[header_len];
             header_len++;
-            header[header_len] = '\0';        
+            header[header_len] = '\0';
         } else if (bytes_read == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 // no more data to read, break out of loop
                 break;
             }
             // an actual error occoured
-            perror("[Sculpt] Error reading body from client");
+            sc_perror(mgr, SC_LL_NORMAL, "[Sculpt] Error reading header from client\n");
             return SC_READ_ERR;
+
         } else if (bytes_read == 0) {
             // EOF e or client closed the connection
             if (header_len > 0) {
                 // we still have some header data read, but EOF is reached
                 return SC_OK; 
             }
-            return SC_FINISHED;
+            return SC_CONN_CLOSED;
         }
     }
 
@@ -391,22 +739,22 @@ int next_header(int fd, char *header, size_t buf_len) {
     return SC_OK;
 }
 
-int get_http_msg(char *header, sc_http_msg *http_msg) {
-    if (http_msg == NULL) {
-        return SC_BAD_ARGUMENTS_ERR;
-    }
-    if (header == NULL) {
-        return SC_BAD_ARGUMENTS_ERR;
-    }    
-    
-    const char *space = strchr(header, ' ');
+int get_http_msg(sc_conn_mgr *mgr, char *header, sc_http_msg *http_msg) {
+    RETURN_ERROR_IF(!http_msg, SC_BAD_ARGUMENTS_ERR, "[Sculpt] The http_msg pointer can't be null\n");
+    RETURN_ERROR_IF(!header, SC_BAD_ARGUMENTS_ERR, "[Sculpt] The sc_header pointer can't be null\n");
+ 
+    sc_log(mgr, SC_LL_DEBUG, "Getting http msg on header: %s\n", header);
+
+    char *space = strchr(header, ' ');
     if (space == NULL) {
+        sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] The header passed to get_http_msg was malformed, as it was missing a space character\n");
         return SC_MALFORMED_HEADER_ERR;
     }
-    
+
     // find method in header
     size_t method_len = space - header;
     if (method_len == 0 || method_len > METHOD_BUF_SIZE) {
+        sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] The header passed to get_http_msg was malformed, as it had a method that was too long\n");
         return SC_BUFFER_OVERFLOW_ERR;
     }
 
@@ -419,13 +767,15 @@ int get_http_msg(char *header, sc_http_msg *http_msg) {
     while (*uri_start == ' ') uri_start++;
 
     // find uri in header
-    const char *uri_end = strchr(uri_start, ' ');
-    if (!uri_end) {
+    space = strchr(uri_start, ' ');
+    if (!space) {
+        sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] The header passed to get_http_msg was malformed, as it was missing a space character\n");
         return SC_MALFORMED_HEADER_ERR;
     }
 
-    size_t uri_len = uri_end - uri_start;
+    size_t uri_len = space - uri_start;
     if (uri_len == 0 || uri_len > URL_BUF_SIZE) {
+        sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] The header passed to get_http_msg was malformed, as it had a uri that exceeded the max buffer size\n");
         return SC_BUFFER_OVERFLOW_ERR;
     }
 
@@ -433,34 +783,52 @@ int get_http_msg(char *header, sc_http_msg *http_msg) {
     memcpy(uri_buf, uri_start, uri_len);
     uri_buf[uri_len] = '\0';
 
+    // skip extra spaces
+    const char *version_start = space + 1;
+    while (*version_start == ' ') version_start++;
+
+    // find version in header
+    const char *end = strchr(version_start, '\0');
+    if (!end) {
+        sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] The header passed to get_http_msg was malformed, as it was missing a newline character\n");
+        return SC_MALFORMED_HEADER_ERR;
+    }
+
+    size_t version_len = end - version_start;
+    if (version_len == 0 || version_len > VERSION_BUF_SIZE) {
+        sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] The header passed to get_http_msg was malformed, as it had a uri that exceeded the max buffer size\n");
+        return SC_BUFFER_OVERFLOW_ERR;
+    }
+
+    char version_buf[VERSION_BUF_SIZE];
+    memcpy(version_buf, version_start, version_len);
+    version_buf[version_len] = '\0';
+
     http_msg->uri = sc_str_copy_n(uri_buf, uri_len);
     http_msg->method = sc_str_copy_n(method_buf, method_len);
-
-    printf("Result: URI: %s, Method: %s\n", http_msg->uri.buf, http_msg->method.buf);
+    http_msg->version = sc_str_copy_n(version_buf, version_len);
 
     return SC_OK;
 }
 
-static int parse_all_headers(sc_conn_mgr *mgr, sc_conn *conn, sc_headers **headers, sc_http_msg *http_msg, bool *keep_alive) {
-
+static int parse_all_headers(sc_conn_mgr *mgr, sc_conn *conn, sc_headers **headers, sc_http_msg *http_msg) {
     int err;
+
     // get and parse headers
     // first, get the initial HTTP header (METHOD URI HTTP/VERSION)
     char header_buf[HEADER_BUF_SIZE] = {0};
-    err = next_header(conn->fd, header_buf, HEADER_BUF_SIZE);
+    err = next_header(mgr, conn->fd, header_buf, HEADER_BUF_SIZE);
     if (err != SC_OK && err != SC_FINISHED) {
-        fprintf(stderr, "[Sculpt] Critical: Error parsing request line header. Proceeding is impossible. Error code: %d\n", err);
-        cleanup_after_error(mgr, conn);
-        return SC_HEADER_PARSE_ERR;
+        sc_error_log(mgr, SC_LL_MINIMAL, "[Sculpt] Critical: Error parsing request line header. Proceeding is impossible. Error code: %d\n", err); // will log on minimal because the error killed the entire request
+        return err;
     }
 
-    err = get_http_msg(header_buf, http_msg);
+    err = get_http_msg(mgr, header_buf, http_msg);
     if (err != SC_OK) {
-        fprintf(stderr, "[Sculpt] Critical: error parsing URI and Method from HTTP request line. Proceeding is impossible. Error code: %d\n", err); 
-        cleanup_after_error(mgr, conn);
-        return SC_HEADER_PARSE_ERR;
+        sc_error_log(mgr, SC_LL_MINIMAL, "[Sculpt] Critical: error parsing URI and Method from HTTP request line. Proceeding is impossible. Returning error 400. Error code: %d\n", err);
+        return err;
     }
-    printf("HTTP MSG: %s, %s\n", http_msg->uri.buf, http_msg->method.buf);
+    sc_log(mgr, SC_LL_DEBUG, "HTTP MSG: %s, %s\n", http_msg->uri.buf, http_msg->method.buf);
 
     // now, we parse the missing HTTP headers into sc_headers
     *headers = NULL;
@@ -468,14 +836,14 @@ static int parse_all_headers(sc_conn_mgr *mgr, sc_conn *conn, sc_headers **heade
     while (err != SC_FINISHED) {
         // check if there are happening errors consistently
         if (error_count >= SC_MAX_HEADER_ERROR_COUNT) {
-            fprintf(stderr, "[Sculpt] More than %d consecutive errors occoured in header parsing. Interrupting parsing process.\n", SC_MAX_HEADER_ERROR_COUNT);
+            sc_error_log(mgr,  SC_LL_NORMAL, "[Sculpt] More than %d consecutive errors occoured in header parsing. Interrupting parsing process.\n", SC_MAX_HEADER_ERROR_COUNT);
             return SC_HEADER_PARSE_ERR;
         }
 
         // get next header
-        err = next_header(conn->fd, header_buf, HEADER_BUF_SIZE);
+        err = next_header(mgr, conn->fd, header_buf, HEADER_BUF_SIZE);
         if (err != SC_OK && err != SC_FINISHED) {
-            fprintf(stderr, "[Sculpt] Error parsing one of the headers in request, error code: %d\n", err);
+            sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] Error parsing one of the headers in request, error code: %d\n", err);
             error_count ++;
             continue;
         }
@@ -484,13 +852,14 @@ static int parse_all_headers(sc_conn_mgr *mgr, sc_conn *conn, sc_headers **heade
         }
 
         if (strstr(header_buf, "Connection: keep-alive")) {
-            *keep_alive = true;
+            sc_log(mgr, SC_LL_DEBUG, "Found keep-alive header\n");
+            conn->persistent = true;
         }
 
         // add header to headers list
         *headers = sc_header_append(header_buf, *headers);
         if (headers == NULL) {
-            fprintf(stderr, "[Sculpt] Error appending new header to header list. Headers may be incomplete as a result.");
+            sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] Error appending new header to header list. Headers may be incomplete as a result.\n");
         }
 
         error_count = 0;
@@ -503,72 +872,122 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
     RETURN_ERROR_IF(!mgr, SC_BAD_ARGUMENTS_ERR, "[Sculpt] The mgr pointer cant be null");
     sc_mgr_conns_cleanup(mgr);
 
+    // wait for some event in epoll and handle errors
     int n = epoll_wait(mgr->epoll_fd, mgr->events, mgr->max_events, timeout_ms);
     if (n == -1) {
         if (errno == EINTR) { // not an error - the system just got interrupted mid syscall
-            printf("[Sculpt] Warning - epoll_wait interrupted (errno = EINTR)");
+            sc_error_log(mgr, SC_LL_DEBUG, "[Sculpt] Warning - epoll_wait interrupted (errno = EINTR)");
             return SC_OK;
         }
-        perror("[Sculpt] Error no epoll_wait");
+        sc_perror(mgr, SC_LL_DEBUG, "[Sculpt] Error on epoll_wait");
         return SC_EPOLL_WAIT_ERR;
     }
-    printf("[Sculpt] Connection quantity: %d\n", mgr->conn_count);
 
+    // log stuff
+    sc_log(mgr,  SC_LL_DEBUG, "[Sculpt] Connection quantity: %d\n", mgr->conn_count);
+    sc_log(mgr, SC_LL_DEBUG, "[Sculpt] Epoll event quantity: %d\n", n);
+
+    // manage all epoll events
     for (int i = 0; i < n; i++) {
        // handle errors with the epoll event
         if (mgr->events[i].events & EPOLLERR) {
             sc_conn *conn = mgr->events[i].data.ptr;
-            perror("[Sculpt] Error with epoll, closing connection...");
+            sc_perror(mgr, SC_LL_MINIMAL, "[Sculpt] Error with epoll, closing connection...");
             cleanup_after_error(mgr, conn);
             continue;
         }
 
         if (mgr->events[i].data.fd == mgr->fd) {
+            // new connection handling
             int rc = create_new_connection(mgr);
             if (rc == SC_CONTINUE) continue;
             if (rc != SC_OK) return rc;
         } else {
             // existing connection handling
-            sc_conn *conn = mgr->events[i].data.ptr;
+
+            sc_conn *conn = mgr->events[i].data.ptr; // get the connection and handle errors
             if (!conn) {
-                perror("[Sculpt] Critical: Error gathering connection struct from epoll event");
+                sc_perror(mgr, SC_LL_MINIMAL, "[Sculpt] Critical: Error gathering connection struct from epoll event");
                 continue;
             }
-            if (mgr->events[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
+            if (mgr->events[i].events & (EPOLLERR)) {
+                sc_perror(mgr, SC_LL_MINIMAL, "[Sculpt] Critical: error with epoll in new event, closing connection");
                 epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
                 close(conn->fd);
-                sc_mgr_conn_release(mgr, conn);
+                sc_mgr_conn_pool_release(mgr, conn);
                 continue;
             }
+            if (mgr->events[i].events & (EPOLLHUP)) {
+                sc_perror(mgr, SC_LL_DEBUG, "[Sculpt] Client closed its connection.");
+                epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+                close(conn->fd);
+                sc_mgr_conn_pool_release(mgr, conn);
+                continue;
+            } // will not handle EPOLLRDHUP, as the header parsing function already handles EOF
 
+            // after getting the connection and managing errors, we can check if it has an input event and handle the input.
             if (mgr->events[i].events & EPOLLIN) {
-                bool keep_alive = false;
+                // input event from fd
                 conn->last_active = time(NULL);
                 
-                sc_headers *headers = NULL;
+                /* HEADER PARSING */
                 sc_http_msg http_msg;
-                int err = parse_all_headers(mgr, conn, &headers, &http_msg, &keep_alive);
-                if (err != SC_OK) {
-                    sc_headers_free(headers);
+                sc_headers *headers = NULL;
+                void *extra_data = NULL;
+                if (mgr->protocol == SC_PROTOCOL_HTTP) { // parsing of HTTP headers
+                    sc_headers *headers = NULL;
+                    int err = parse_all_headers(mgr, conn, &headers, &http_msg);
+                    
+                    if (err == SC_MALFORMED_HEADER_ERR || err == SC_BUFFER_OVERFLOW_ERR) {
+                        sc_error_log(mgr, SC_LL_DEBUG, "[Sculpt] Returning 400 due to malformed headers\n");
+                        return_400(mgr, conn);
+                        sc_headers_free(headers);
+                        continue;
+                    } else if (err == SC_CONN_CLOSED) {
+                        sc_log(mgr, SC_LL_NORMAL, "[Sculpt] Detected socket closing during header pasrsing; closing the connection with the client\n");
+                        epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+                        close(conn->fd);
+                        sc_mgr_conn_pool_release(mgr, conn);
+                        continue;
+                    } else if (err != SC_OK) {
+                        sc_error_log(mgr, SC_LL_DEBUG, "[Sculpt] Returning 500 dure to internal server error while getting headers\n"); 
+                        cleanup_after_error(mgr, conn);
+                        sc_headers_free(headers);
+                        continue;
+                    } // the parse_all_headers frunction already logs everything
+
+                } else {
+                    // if the protocol is not HTTP, we use the parser set in the mgr
+                    int err = mgr->protocol_handler(conn, &http_msg, &headers, &extra_data);
+                    if (err != SC_OK) {
+                        sc_error_log(mgr, SC_LL_DEBUG, "[Sculpt] Response code on protocol handler was not OK, calling protocol fallback function. Error code: %d", err);
+                        mgr->protocol_fallback(mgr, conn, http_msg, headers, extra_data, err);
+                        continue;
+                    }
                 }
+                /* END OF HEADER PARSING */
 
                 // log request
-                printf("[Sculpt] Request: %s on %s\n", http_msg.method.buf, http_msg.uri.buf);
+                sc_log(mgr, SC_LL_NORMAL, "[Sculpt] HTTP Request: %s on %s\n", http_msg.method.buf, http_msg.uri.buf);
+
+                // here we will send the request to a endpoint handler (if possible)
                 struct _endpoint_list *current = mgr->endpoints;
                 while (current) {
                     if (current->soft) {
-                        // we call it even if just the prefix matches
+                        // we call it even if just the prefix matches (soft)
                         if (sc_strprefix(http_msg.uri, current->val)) {
                             // the uri buffer starts with the prefix of the endpoint
-                            current->func(conn->fd, http_msg, headers);
-                            sc_str_free(&http_msg.uri);
+
+                            current->func(conn->fd, http_msg, headers, extra_data); // call the handler
+                            sc_str_free(&http_msg.uri); // free the http_msg
                             sc_str_free(&http_msg.method);
                             goto end;
                         }
                     } else {
                         if(sc_strcmp(current->val, http_msg.uri) == 0) {
-                            // the uri buffer is EQUAL to the endpoint
-                            current->func(conn->fd, http_msg, headers);
+                            // we only call it if the URI is the SAME (hard)
+
+                            current->func(conn->fd, http_msg, headers, extra_data); // call the handler
                             sc_str_free(&http_msg.uri);
                             sc_str_free(&http_msg.method);
                             goto end;
@@ -577,7 +996,7 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                     current = current->next;
                 }
 
-                // no valid enpoints were found, so we return 404
+                // if no valid enpoints were found, we return HTTP 404
                 const char *http_response_404 = 
                 "HTTP/1.1 404 NOT FOUND\r\n"
                 "Content-Type: text/html; charset=UTF-8\r\n"
@@ -586,302 +1005,35 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                 "\r\n"
                 "NOT FOUND";
                 if (send(conn->fd, http_response_404, strlen(http_response_404), 0) == -1) {
-                    perror("[Sculpt] Error sending response");
+                    sc_perror(mgr, SC_LL_NORMAL, "[Sculpt] Error sending 404 response on unset route");
                 }
 
                 end:
+                    // cleanup headers and re-add connection to epoll (if persistent is true due to keep-alive header)
                     sc_headers_free(headers);
-                    if (!keep_alive) {
-                        printf("[Sculpt] Connection close requested\n");
+
+                    if (!conn->persistent) {
+                        // delete and release connection
+
+                        sc_log(mgr, SC_LL_DEBUG, "[Sculpt] Connection close requested\n");
                         close(conn->fd);
-                        sc_mgr_conn_release(mgr, conn);
+                        sc_mgr_conn_pool_release(mgr, conn);
                         epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
                     } else {
                         // re-add the connection to epoll for further requests
-                        struct epoll_event event = {
-                            .events = EPOLLIN | EPOLLRDHUP | EPOLLONESHOT,
-                            .data.ptr = conn
-                        };
-                        if (epoll_ctl(mgr->epoll_fd, EPOLL_CTL_MOD, conn->fd, &event) == -1) {
-                            perror("[Sculpt] Failed to re-add connection to epoll");
-                            close(conn->fd);
-                            sc_mgr_conn_release(mgr, conn);
-                            epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, &event);
-                        }
+
+                        epoll_readd_conn(mgr, conn);
                     }
 
                 // all other responsibilities are passed to the handler, so no need to do anything else
             } else {
-                perror("[Sculpt] Error reading from client");
+                // this means that there was no input event
+                sc_perror(mgr, SC_LL_NORMAL, "[Sculpt] Error reading from client: no input event in epoll");
             }
         }
     }
-
     return SC_OK;
-}
-
-int sc_mgr_conn_pool_init(sc_conn_mgr *mgr, int max_conns) {
-    RETURN_ERROR_IF(!mgr, SC_BAD_ARGUMENTS_ERR, "[Sculpt] NULL manager provided");
-
-    mgr->max_conn_count = max_conns;
-    mgr->conn_count = 0;
-
-    mgr->conn_pool = calloc(max_conns, sizeof(sc_conn));
-    if (mgr->conn_pool == NULL) {
-        return SC_MALLOC_ERR;
-    }
-
-    mgr->free_conns = &mgr->conn_pool[0]; // free conns will be the same as con poolat the start
-    // link list until max_conns - 1 to avoid segfault
-    for(int i = 0; i < max_conns - 1; i++) {
-        mgr->conn_pool[i].next = &mgr->conn_pool[i + 1];
-        mgr->conn_pool[i].state = CONN_IDLE;
-    }
-    mgr->conn_pool[max_conns - 1].next = NULL;
-    mgr->conn_pool[max_conns - 1].state = CONN_IDLE;
-
-    mgr->conn_timeout = SC_DEFAULT_CONN_TIMEOUT;
-    mgr->conn_max_age = SC_DEFAULT_CONN_MAX_AGE;
-
-    return SC_OK;
-}
-
-sc_conn *sc_mgr_conn_get_free(sc_conn_mgr *mgr) {
-    if (mgr == NULL || mgr->conn_count >= mgr->max_conn_count) return NULL;
-
-    // pop first free conn from list
-    sc_conn *conn = mgr->free_conns;
-    mgr->free_conns = mgr->free_conns->next;
-
-    // clear previous conn state
-    // init new conn
-    time_t current_time = time(NULL);
-    conn->last_active = current_time;
-    conn->creation_time = current_time;
-    conn->state = CONN_ACTIVE;
-    conn->fd = -1; // fd will be invalid until it is set
-
-    __atomic_fetch_add(&mgr->conn_count, 1, __ATOMIC_SEQ_CST);
-
-    return conn;
-}
-
-void sc_mgr_conn_release(sc_conn_mgr *mgr, sc_conn *conn) {
-    if (!conn) return;
-
-    // reset the connection
-    conn->state = CONN_CLOSING;
-    conn->last_active = time(NULL);
-
-    // add connection back to free connection stack
-    conn->next = mgr->free_conns;
-    mgr->free_conns = conn;
-    
-    __atomic_fetch_sub(&mgr->conn_count, 1, __ATOMIC_SEQ_CST); // decrement the mgr conn count
-}
-
-void sc_mgr_conns_cleanup(sc_conn_mgr *mgr) {
-    time_t now = time(NULL);
-
-    for (size_t i = 0; i < mgr->max_conn_count; i++) {
-        sc_conn *conn = &mgr->conn_pool[i];
-        
-        // check time limits
-        if ((CONN_ACTIVE == conn->state) &&
-        (now - conn->last_active > mgr->conn_timeout || now - conn->creation_time > mgr->conn_max_age)) {
-            
-            // close the fd
-            shutdown(conn->fd, SHUT_RDWR);
-            close(conn->fd);
-            epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-            sc_mgr_conn_release(mgr, conn);
-        }
-    }
-}
-
-void sc_mgr_conn_pool_destroy(sc_conn_mgr *mgr) {
-    // close all active connections from array
-    for (int i = 0; i < mgr->max_conn_count; i++) {
-        sc_conn *conn = &mgr->conn_pool[i];
-        if (conn->state == CONN_ACTIVE) {
-            close(conn->fd);
-        }
-        //free(conn);
-    }
-    
-    // free pools
-    free(mgr->conn_pool);
-    mgr->conn_pool = NULL;
-    mgr->free_conns = NULL;
-
 }
 
 // End of ../src/sculpt_conn.c
-
-// Start of ../src/sculpt_mgr.c
-#include "sculpt.h"
-#include <stdlib.h>
-#include <sys/socket.h>
-#include <string.h>
-
-sc_addr_info sc_addr_create(int sin_family, int port) {
-    sc_addr_info addr_mgr;
-    addr_mgr._sock_addr.sin_family = sin_family;
-    addr_mgr._sock_addr.sin_port = htons(port);
-    addr_mgr._sock_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr_mgr.port = port;
-    return addr_mgr;
-}
-
-sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
-    *err = SC_OK;
-    sc_conn_mgr *mgr = malloc(sizeof(sc_conn_mgr));
-    if (mgr == NULL) {
-        perror("[Sculpt] Error: memory allocation for sc_conn_mgr");
-        *err = SC_MALLOC_ERR;
-        return NULL;
-    }
-
-    mgr->addr_info = addr_mgr;
-    mgr->backlog = SC_DEFAULT_BACKLOG;
-    mgr->max_events = SC_DEFAULT_EPOLL_MAXEVENTS;
-    mgr->listening = false;
-    mgr->epoll_fd = -1;
-    mgr->endpoints = NULL;
-
-    mgr->fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (mgr->fd < 0) {
-        perror("[Sculpt] Error: error creating socket for conn_mgr");
-        free(mgr);
-        *err = SC_SOCKET_CREATION_ERR;
-        return NULL;
-    }
-    
-    int opt = 1;
-    if (setsockopt(mgr->fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(int)) < 0) {
-        perror("[Sculpt] Error: failed to set socket options");
-        *err = SC_SOCKET_SETOPT_ERR;
-        goto error;
-    }
-
-    if (bind(mgr->fd, (struct sockaddr *)&mgr->addr_info, sizeof(mgr->addr_info))) {
-        perror("[Sculpt] Error: Failed to bind server to the address");
-        *err = SC_SOCKET_BIND_ERR;
-        goto error;
-    }
-
-    return mgr;
-
-    error:
-        close(mgr->fd);
-        free(mgr);
-        return NULL;
-}
-
-void sc_mgr_backlog_set(sc_conn_mgr *mgr, int backlog) {
-    mgr->backlog = backlog;
-}
-
-void sc_mgr_epoll_maxevents_set(sc_conn_mgr *mgr, int maxevents) {
-    mgr->max_events = maxevents;
-}
-
-void sc_mgr_ll_set(sc_conn_mgr *mgr, int ll) {
-    mgr->ll = ll;
-}
-
-int sc_mgr_listen(sc_conn_mgr *mgr) {
-    if (listen(mgr->fd, mgr->backlog) < 0) {
-        perror("Error: error in listen()");
-        return SC_SOCKET_LISTEN_ERR;
-    }
-
-    int rc = getnameinfo((struct sockaddr *)&mgr->addr_info, sizeof(mgr->addr_info),
-                        mgr->host_buf, sizeof(mgr->host_buf),
-                        mgr->service_buf, sizeof(mgr->service_buf), 0);
-    if (rc != 0) {
-        fprintf(stderr, "[Sculpt] Warning: %s; ", gai_strerror(rc));
-        fprintf(stderr, "Server is listening on unknown URL\n");
-        return SC_SOCKET_GETNAMEINFO_ERR;
-    }
-
-    printf("\n[Sculpt] Server is listening on http://%s%s:%d\n", mgr->host_buf, mgr->service_buf, mgr->addr_info.port);
-
-    mgr->listening = true;
-    return SC_OK;
-}
-
-void sc_mgr_finish(sc_conn_mgr *mgr) {
-    if (!mgr) {
-        return;
-    }
-    int ll = mgr->ll;
-
-    sc_mgr_conn_pool_destroy(mgr);
-    if (ll == SC_LL_DEBUG) {
-        printf("[Sculpt]freed conn pool\n");
-    }
-
-    // close epoll fd and free events array
-    if (mgr->epoll_fd >= 0) {
-        close(mgr->epoll_fd);
-        mgr->epoll_fd = -1;
-    }
-    free(mgr->events);
-    mgr->events = NULL; // !! dangling pointers
-
-    printf("[Sculpt]freed epoll\n");
-
-    // close server socket
-    if (mgr->fd >= 0) {
-        close(mgr->fd);
-        mgr->fd = -1;
-    }
-    if (ll == SC_LL_DEBUG) {
-        printf("[Sculpt]freed server socket\n");
-     }
-
-    // free endpoints list
-    while(mgr->endpoints) {
-        struct _endpoint_list *next = mgr->endpoints->next;
-        free(mgr->endpoints);
-        mgr->endpoints = next;
-    }
-    free(mgr);
-}
-
-struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *endpoint, bool soft, void (*func)(int, sc_http_msg, sc_headers*)) {
-    struct _endpoint_list *new = malloc(sizeof(struct _endpoint_list));
-    if (new == NULL) {
-        return NULL;
-    }
-
-    new->soft = soft;
-    new->func = func;
-    sc_str val = sc_str_ref_n(endpoint, strlen(endpoint));
-    new->val = val;
-    new->next = list;
-    return new;
-}
-
-int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*)) {
-    mgr->endpoints = _endpoint_add(mgr->endpoints, endpoint, false, f);
-    if (mgr->endpoints == NULL) {
-       return SC_MALLOC_ERR;
-    }
-    return SC_OK;
-}
-
-int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*)) {
-    mgr->endpoints = _endpoint_add(mgr->endpoints, endpoint, true, f);
-    if (mgr->ll == SC_LL_DEBUG) {
-        printf("[Sculpt]Endpoint added: %s", mgr->endpoints->val.buf);
-    }
-    if (mgr->endpoints == NULL) {
-        return SC_MALLOC_ERR;
-    }
-    return SC_OK;
-}
-
-// End of ../src/sculpt_mgr.c
 
