@@ -175,6 +175,19 @@ void root_handler(int fd, sc_http_msg msg, sc_headers *headers, void *extra_data
 
 
 void root_handler_http(int fd, sc_http_msg msg, sc_headers *headers, void *extra_data) {
+    if (strncmp(msg.method.buf, "OPTIONS", strlen("OPTIONS")) == 0) {
+        const char *cors_msg = 
+            "HTTP/1.1 204 No Content\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Access-Control-Allow-Methods: *\r\n"
+            "Access-Control-Allow-Headers: *\r\n"
+            "Access-Control-Max-Age: 86400\r\n"
+            "Content-Length: 0\r\n"
+            "\r\n";
+        send(fd, cors_msg, strlen(cors_msg), 0);
+        printf("Sent CORS authorization response");
+    }
+
     char body[BODY_BUF] = "<html><h1>Hello, world! Your request:</h1>\0";
     size_t body_size = strlen(body);
     
@@ -188,8 +201,11 @@ void root_handler_http(int fd, sc_http_msg msg, sc_headers *headers, void *extra
         current = current->next;
     }
     strncat(body, "</html>", 8);
+
+    sc_headers *response_headers = NULL;
+    response_headers = sc_header_append("Access-Control-Allow-Origin: *", response_headers);
     
-    if (sc_easy_send(fd, 200, "OK", "Content-Type: text/html", body, NULL) == SC_OK) {
+    if (sc_easy_send(fd, 200, "OK", "Content-Type: text/html", body, response_headers) == SC_OK) {
         printf("Response sent\n");
     } else {
         perror("Error sending response");
@@ -228,11 +244,11 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    sc_mgr_bind_soft(mgr, "/", root_handler);
+    sc_mgr_bind_soft(mgr, "/", root_handler_http);
 
     sc_mgr_ll_set(mgr, SC_LL_DEBUG);
     sc_mgr_conn_recycling_set(mgr, true);
-    mgr->protocol = SC_PROTOCOL_CUSTOM;
+    //mgr->protocol = SC_PROTOCOL_CUSTOM;
     mgr->protocol_handler = protocol_handler;
     mgr->protocol_fallback = protocol_fallback;
     
