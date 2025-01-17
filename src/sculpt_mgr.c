@@ -2,12 +2,15 @@
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <string.h>
+#include <signal.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
-sc_addr_info sc_addr_create(int sin_family, int port) {
+sc_addr_info sc_addr_create(int sin_family, int port, int inaddr) {
     sc_addr_info addr_mgr;
     addr_mgr._sock_addr.sin_family = sin_family;
     addr_mgr._sock_addr.sin_port = htons(port);
-    addr_mgr._sock_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr_mgr._sock_addr.sin_addr.s_addr = htonl(inaddr);
     addr_mgr.port = port;
     return addr_mgr;
 }
@@ -21,16 +24,21 @@ sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
         return NULL;
     }
 
+    signal(SIGPIPE, SIG_IGN);
+
     mgr->addr_info = addr_mgr;
     mgr->backlog = SC_DEFAULT_BACKLOG;
     mgr->max_events = SC_DEFAULT_EPOLL_MAXEVENTS;
     mgr->listening = false;
     mgr->epoll_fd = -1;
     mgr->endpoints = NULL;
+    mgr->ll = SC_LL_NORMAL;
+    mgr->recycle_conns = true;
+    mgr->protocol = SC_PROTOCOL_HTTP;
 
     mgr->fd = socket(AF_INET, SOCK_STREAM, 0);
     if (mgr->fd < 0) {
-        perror("[Sculpt] Error: error creating socket for conn_mgr");
+        sc_perror(mgr, SC_LL_MINIMAL, "[Sculpt] Error: error creating socket for conn_mgr");
         free(mgr);
         *err = SC_SOCKET_CREATION_ERR;
         return NULL;
@@ -38,13 +46,13 @@ sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
     
     int opt = 1;
     if (setsockopt(mgr->fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(int)) < 0) {
-        perror("[Sculpt] Error: failed to set socket options");
+        sc_perror(mgr, SC_LL_MINIMAL, "[Sculpt] Error: failed to set socket options");
         *err = SC_SOCKET_SETOPT_ERR;
         goto error;
     }
 
     if (bind(mgr->fd, (struct sockaddr *)&mgr->addr_info, sizeof(mgr->addr_info))) {
-        perror("[Sculpt] Error: Failed to bind server to the address");
+        sc_perror(mgr, SC_LL_MINIMAL, "[Sculpt] Error: Failed to bind server to the address");
         *err = SC_SOCKET_BIND_ERR;
         goto error;
     }
@@ -69,22 +77,27 @@ void sc_mgr_ll_set(sc_conn_mgr *mgr, int ll) {
     mgr->ll = ll;
 }
 
+void sc_mgr_conn_recycling_set(sc_conn_mgr *mgr, bool recycle) {
+    mgr->recycle_conns = recycle;
+}
+
 int sc_mgr_listen(sc_conn_mgr *mgr) {
     if (listen(mgr->fd, mgr->backlog) < 0) {
         perror("Error: error in listen()");
         return SC_SOCKET_LISTEN_ERR;
     }
 
+    printf("Binding to: %s:%d\n", inet_ntoa(mgr->addr_info._sock_addr.sin_addr), ntohs(mgr->addr_info._sock_addr.sin_port));
     int rc = getnameinfo((struct sockaddr *)&mgr->addr_info, sizeof(mgr->addr_info),
                         mgr->host_buf, sizeof(mgr->host_buf),
                         mgr->service_buf, sizeof(mgr->service_buf), 0);
     if (rc != 0) {
-        fprintf(stderr, "[Sculpt] Warning: %s; ", gai_strerror(rc));
-        fprintf(stderr, "Server is listening on unknown URL\n");
+        sc_error_log(mgr, SC_LL_MINIMAL, "[Sculpt] Warning: %s; ", gai_strerror(rc));
+        sc_error_log(mgr, SC_LL_MINIMAL, "Server is listening on unknown URL\n");
         return SC_SOCKET_GETNAMEINFO_ERR;
     }
 
-    printf("\n[Sculpt] Server is listening on http://%s%s:%d\n", mgr->host_buf, mgr->service_buf, mgr->addr_info.port);
+    sc_log(mgr, SC_LL_MINIMAL, "\n[Sculpt] Server is listening on http://%s:%d\n", mgr->host_buf, mgr->addr_info.port);
 
     mgr->listening = true;
     return SC_OK;
@@ -94,12 +107,9 @@ void sc_mgr_finish(sc_conn_mgr *mgr) {
     if (!mgr) {
         return;
     }
-    int ll = mgr->ll;
 
     sc_mgr_conn_pool_destroy(mgr);
-    if (ll == SC_LL_DEBUG) {
-        printf("[Sculpt]freed conn pool\n");
-    }
+    sc_log(mgr, SC_LL_DEBUG, "[Sculpt]freed conn pool\n");
 
     // close epoll fd and free events array
     if (mgr->epoll_fd >= 0) {
@@ -109,16 +119,15 @@ void sc_mgr_finish(sc_conn_mgr *mgr) {
     free(mgr->events);
     mgr->events = NULL; // !! dangling pointers
 
-    printf("[Sculpt]freed epoll\n");
+    sc_log(mgr, SC_LL_DEBUG, "[Sculpt] freed epoll\n");
 
     // close server socket
     if (mgr->fd >= 0) {
         close(mgr->fd);
         mgr->fd = -1;
     }
-    if (ll == SC_LL_DEBUG) {
-        printf("[Sculpt]freed server socket\n");
-     }
+    sc_log(mgr, SC_LL_DEBUG, "[Sculpt]freed server socket\n");
+    
 
     // free endpoints list
     while(mgr->endpoints) {
@@ -129,7 +138,7 @@ void sc_mgr_finish(sc_conn_mgr *mgr) {
     free(mgr);
 }
 
-struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *endpoint, bool soft, void (*func)(int, sc_http_msg, sc_headers*)) {
+struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *endpoint, bool soft, void (*func)(int, sc_http_msg, sc_headers*, void*)) {
     struct _endpoint_list *new = malloc(sizeof(struct _endpoint_list));
     if (new == NULL) {
         return NULL;
@@ -143,7 +152,7 @@ struct _endpoint_list *_endpoint_add(struct _endpoint_list *list, const char *en
     return new;
 }
 
-int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*)) {
+int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*, void*)) {
     mgr->endpoints = _endpoint_add(mgr->endpoints, endpoint, false, f);
     if (mgr->endpoints == NULL) {
        return SC_MALLOC_ERR;
@@ -151,11 +160,9 @@ int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_h
     return SC_OK;
 }
 
-int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*)) {
+int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*, void*)) {
     mgr->endpoints = _endpoint_add(mgr->endpoints, endpoint, true, f);
-    if (mgr->ll == SC_LL_DEBUG) {
-        printf("[Sculpt]Endpoint added: %s", mgr->endpoints->val.buf);
-    }
+    sc_log(mgr, SC_LL_DEBUG, "[Sculpt]Endpoint added: %s", mgr->endpoints->val.buf);
     if (mgr->endpoints == NULL) {
         return SC_MALLOC_ERR;
     }

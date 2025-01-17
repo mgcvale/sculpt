@@ -9,6 +9,7 @@ add_executable(testapp
     src/sculpt_util.c
     src/sculpt_header.c
     src/sculpt_conn.c
+    src/sculpt_pool.c
     app.c
 )
 

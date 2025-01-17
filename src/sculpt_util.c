@@ -1,11 +1,11 @@
 #include <stdlib.h>
+
 #include <string.h>
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdarg.h>
 
 #include "sculpt.h"
-
 
 const char *http_template = "HTTP/1.1 %d %s\r\n"
     "Content-Length: %zu\r\n"
@@ -14,9 +14,8 @@ const char *http_template = "HTTP/1.1 %d %s\r\n"
 // logging
 void sc_log(sc_conn_mgr *mgr, int ll, const char *format, ...) {
     // only log if the current log level (ll) is equal or higher than the requested one (level)
-    // exapmle: ll = SC_LL_NORMAL (2), level = SC_LL_MINIMAL (1) -> we log;
-    // ll = SC_LL_MINIMAL (1), level = SC_LL_NORMAL (2) -> we DON'T log;
-    if (ll == SC_LL_NONE || ll < mgr->ll) return;
+    // 
+    if (ll == SC_LL_NONE || ll > mgr->ll) return;
 
     va_list args;
     va_start(args, format);
@@ -25,7 +24,7 @@ void sc_log(sc_conn_mgr *mgr, int ll, const char *format, ...) {
 }
 
 void sc_error_log(sc_conn_mgr *mgr, int ll, const char *format, ...) {
-    if (ll == SC_LL_NONE || ll < mgr->ll) return;
+    if (ll == SC_LL_NONE || ll > mgr->ll) return;
 
     va_list args;
     va_start(args, format);
@@ -34,7 +33,7 @@ void sc_error_log(sc_conn_mgr *mgr, int ll, const char *format, ...) {
 }
 
 void sc_perror(sc_conn_mgr *mgr, int ll, const char *err) {
-    if (ll == SC_LL_NONE || ll < mgr->ll) return;
+    if (ll == SC_LL_NONE || ll > mgr->ll) return;
 
     perror(err);
 }
@@ -136,12 +135,12 @@ int sc_easy_send(int fd, int code, const char *code_str, const char *content_typ
         return SC_MALLOC_ERR;
     }
 
+    printf("[Sculpt] sending request with sc_easy_send: %s", response);
     if (send(fd, response, strlen(response), 0) == -1) {
        return SC_SEND_ERR;
     }
 
     free(response);
     sc_headers_free(headers);
-
     return SC_OK;
 }

@@ -10,9 +10,10 @@ echo "" >> "$output"
 
 src_files=(
     "../src/sculpt_util.c" # util has to be the first file because of the sc_log function
+    "../src/sculpt_pool.c"
     "../src/sculpt_header.c"
-    "../src/sculpt_conn.c"
     "../src/sculpt_mgr.c"
+    "../src/sculpt_conn.c"
 )
 
 for file in "${src_files[@]}"; do
