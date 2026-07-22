@@ -58,7 +58,7 @@ static int create_new_connection(sc_conn_mgr *mgr) {
     }
 
     // valid connection was found, so we accept the request
-     conn->fd = accept(mgr->fd, (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
+    conn->fd = accept(mgr->fd, (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
 
     if (conn->fd == -1) {
         sc_perror(mgr,  SC_LL_NORMAL, "[Sculpt] Error on Accept. Checking severity\n");
@@ -167,7 +167,9 @@ int next_header(sc_conn_mgr *mgr, int fd, char *header, size_t buf_len) {
     char last_char = '\0';
 
     while (1) {
-        if (header_len > buf_len) { // stop if the header is larger than the buffer
+        // stop if the header is larger than the buffer
+        // only checking header_len > buf_len could lead to a two-byte overflow, since it reads into header[buf_len] and writes `\0` at buf_len + 1
+        if (header_len >= buf_len - 1) {
             return SC_BUFFER_OVERFLOW_ERR;
         }
 
@@ -222,7 +224,7 @@ int get_http_msg(sc_conn_mgr *mgr, char *header, sc_http_msg *http_msg) {
 
     // find method in header
     size_t method_len = space - header;
-    if (method_len == 0 || method_len > METHOD_BUF_SIZE) {
+    if (method_len == 0 || method_len >= METHOD_BUF_SIZE) {
         sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] The header passed to get_http_msg was malformed, as it had a method that was too long\n");
         return SC_BUFFER_OVERFLOW_ERR;
     }
@@ -243,7 +245,7 @@ int get_http_msg(sc_conn_mgr *mgr, char *header, sc_http_msg *http_msg) {
     }
 
     size_t uri_len = space - uri_start;
-    if (uri_len == 0 || uri_len > URL_BUF_SIZE) {
+    if (uri_len == 0 || uri_len >= URL_BUF_SIZE) {
         sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] The header passed to get_http_msg was malformed, as it had a uri that exceeded the max buffer size\n");
         return SC_BUFFER_OVERFLOW_ERR;
     }
@@ -264,7 +266,7 @@ int get_http_msg(sc_conn_mgr *mgr, char *header, sc_http_msg *http_msg) {
     }
 
     size_t version_len = end - version_start;
-    if (version_len == 0 || version_len > VERSION_BUF_SIZE) {
+    if (version_len == 0 || version_len >= VERSION_BUF_SIZE) {
         sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] The header passed to get_http_msg was malformed, as it had a uri that exceeded the max buffer size\n");
         return SC_BUFFER_OVERFLOW_ERR;
     }
@@ -404,7 +406,6 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                 sc_headers *headers = NULL;
                 void *extra_data = NULL;
                 if (mgr->protocol == SC_PROTOCOL_HTTP) { // parsing of HTTP headers
-                    sc_headers *headers = NULL;
                     int err = parse_all_headers(mgr, conn, &headers, &http_msg);
                     
                     if (err == SC_MALFORMED_HEADER_ERR || err == SC_BUFFER_OVERFLOW_ERR) {
