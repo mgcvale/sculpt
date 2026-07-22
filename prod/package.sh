@@ -13,6 +13,7 @@ src_files=(
     "../src/sculpt_pool.c"
     "../src/sculpt_header.c"
     "../src/sculpt_mgr.c"
+    "../src/sculpt_http.c"
     "../src/sculpt_conn.c"
 )
 
