@@ -12,7 +12,7 @@ Get the latest release from github, download and place the `sculpt.c` and `sculp
 After that, statically link them using a build system, build system generator, or just a plain old compiler.
 
 ### Unstable release
-If you wan't the latest version, you can either get it from the `stable` branch (more stable) or the `devel` branch, which is more unstable and prone to bugs. Clone the repo, remove the `prod/sculpt.c` and `prod/sculpt.h` files, and run the `/prod/package.sh` script to generate them. You can then follow the same steps in the Stable release section above for linking.
+If you want the latest version, you can either get it from the `stable` branch (more stable) or the `devel` branch, which is more unstable and prone to bugs. Clone the repo, remove the `prod/sculpt.c` and `prod/sculpt.h` files, and run the `./prod/package.sh` script to generate them. You can then follow the same steps in the Stable release section above for linking.
 
 ### Documentation
 For the full documentation on actually using the framework, check out [documentation.md](documentation.md)
@@ -38,7 +38,7 @@ To compile the project when developing it, just follow the same instructions on 
 
 Here are the general coding style rules used in this project:
 
-- The identation style used is the `K&R`, even for functions, so ou should put the braces in the same line of the statements.
+- The identation style used is the `K&R`, even for functions, so you should put the braces in the same line of the statements.
 - Use whitespaces between operators (a + 1 instead of a+1)
 - Space the parenthesis in control structures (if, while, for, etc) (while (condition) instead of while(condition)).
 For example:
@@ -86,7 +86,7 @@ Generally, the name for your functions should follow the following pattern: `sc_
 Examples:
 ```
 char *sc_easy_request_build(); // here, we specify that the function is "easy" (it doesn't require specific configurations, and does most things for you). Its 'subject' is the request, and the "action" is build. From this, we conclude that it is a simple request builder.
-void sc_mgr_conn_pool_destroy(); // here, the specificator is none. The "scope" is mgr, the "subject" is conn_pool, and the "action" is destroy. From this, we conclude that it destroys the connection pool of the sc manager.
+void sc_mgr_conn_pool_destroy(); // here, the specificator is none. The "scope" is mgr, the "subject" is conn_pool, and the "action" is destroy. From this, we conclude that it destroys the connection pool of the sculpt manager.
 sc_addr_info sc_addr_create(); // here, the specificator is none, the "scope" and the "subject" is addr, and the "action" is create. From this,  we conclude that the function creates an sc address.
 sc_mgr_epoll_init();
 sc_mgr_listen();
