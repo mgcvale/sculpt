@@ -5,6 +5,7 @@ project(sculpt LANGUAGES C)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_library(sculpt STATIC
+    src/sculpt_http.c
     src/sculpt_mgr.c
     src/sculpt_util.c
     src/sculpt_header.c
