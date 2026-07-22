@@ -133,7 +133,7 @@ void sc_mgr_conn_release(sc_conn_mgr *mgr, sc_conn *conn) {
 
     close(conn->fd);
     conn->fd = -1;
-    
+
     sc_mgr_conn_pool_release(mgr, conn);
 }
 
@@ -284,6 +284,15 @@ int get_http_msg(sc_conn_mgr *mgr, char *header, sc_http_msg *http_msg) {
     return SC_OK;
 }
 
+void sc_http_msg_free(sc_http_msg *msg) {
+    if (!msg) {
+        return;
+    }
+    sc_str_free(&msg->uri);
+    sc_str_free(&msg->version);
+    sc_str_free(&msg->method);
+}
+
 static int parse_all_headers(sc_conn_mgr *mgr, sc_conn *conn, sc_headers **headers, sc_http_msg *http_msg) {
     int err;
 
@@ -400,7 +409,7 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                 conn->last_active = time(NULL);
                 
                 /* HEADER PARSING */
-                sc_http_msg http_msg;
+                sc_http_msg http_msg = {0};
                 sc_headers *headers = NULL;
                 void *extra_data = NULL;
                 if (mgr->protocol == SC_PROTOCOL_HTTP) { // parsing of HTTP headers
@@ -410,15 +419,18 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                         sc_error_log(mgr, SC_LL_DEBUG, "[Sculpt] Returning 400 due to malformed headers\n");
                         return_400(mgr, conn);
                         sc_headers_free(headers);
+                        sc_http_msg_free(&http_msg);
                         continue;
                     } else if (err == SC_CONN_CLOSED) {
                         sc_log(mgr, SC_LL_NORMAL, "[Sculpt] Detected socket closing during header pasrsing; closing the connection with the client\n");
                         sc_mgr_conn_release(mgr, conn);
+                        sc_http_msg_free(&http_msg);
                         continue;
                     } else if (err != SC_OK) {
                         sc_error_log(mgr, SC_LL_DEBUG, "[Sculpt] Returning 500 dure to internal server error while getting headers\n"); 
                         cleanup_after_error(mgr, conn);
                         sc_headers_free(headers);
+                        sc_http_msg_free(&http_msg);
                         continue;
                     } // the parse_all_headers frunction already logs everything
 
@@ -430,6 +442,7 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                         mgr->protocol_fallback(mgr, conn, http_msg, headers, extra_data, err);
                         continue;
                     }
+                    // TODO: add protocol cleanup callback support to avoid leaks
                 }
                 /* END OF HEADER PARSING */
 
@@ -445,8 +458,6 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                             // the uri buffer starts with the prefix of the endpoint
 
                             current->func(conn->fd, http_msg, headers, extra_data); // call the handler
-                            sc_str_free(&http_msg.uri); // free the http_msg
-                            sc_str_free(&http_msg.method);
                             goto end;
                         }
                     } else {
@@ -454,8 +465,6 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                             // we only call it if the URI is the SAME (hard)
 
                             current->func(conn->fd, http_msg, headers, extra_data); // call the handler
-                            sc_str_free(&http_msg.uri);
-                            sc_str_free(&http_msg.method);
                             goto end;
                         }
                     }
@@ -477,6 +486,7 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                 end:
                     // cleanup headers and re-add connection to epoll (if persistent is true due to keep-alive header)
                     sc_headers_free(headers);
+                    sc_http_msg_free(&http_msg);
 
                     if (!conn->persistent) {
                         // delete and release connection

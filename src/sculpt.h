@@ -102,6 +102,9 @@ typedef struct {
     sc_str method;
     sc_str version;
 } sc_http_msg;
+/* http_msg handling methods */
+void sc_http_msg_free(sc_http_msg *msg);
+
 
 /* struct to hold headers of a request */
 typedef struct _header_list {
