@@ -222,7 +222,7 @@ int get_http_msg(sc_conn_mgr *mgr, char *header, sc_http_msg *http_msg) {
 
     // find method in header
     size_t method_len = space - header;
-    if (method_len == 0 || method_len > METHOD_BUF_SIZE) {
+    if (method_len == 0 || method_len >= METHOD_BUF_SIZE) {
         sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] The header passed to get_http_msg was malformed, as it had a method that was too long\n");
         return SC_BUFFER_OVERFLOW_ERR;
     }
@@ -243,7 +243,7 @@ int get_http_msg(sc_conn_mgr *mgr, char *header, sc_http_msg *http_msg) {
     }
 
     size_t uri_len = space - uri_start;
-    if (uri_len == 0 || uri_len > URL_BUF_SIZE) {
+    if (uri_len == 0 || uri_len >= URL_BUF_SIZE) {
         sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] The header passed to get_http_msg was malformed, as it had a uri that exceeded the max buffer size\n");
         return SC_BUFFER_OVERFLOW_ERR;
     }
@@ -264,7 +264,7 @@ int get_http_msg(sc_conn_mgr *mgr, char *header, sc_http_msg *http_msg) {
     }
 
     size_t version_len = end - version_start;
-    if (version_len == 0 || version_len > VERSION_BUF_SIZE) {
+    if (version_len == 0 || version_len >= VERSION_BUF_SIZE) {
         sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] The header passed to get_http_msg was malformed, as it had a uri that exceeded the max buffer size\n");
         return SC_BUFFER_OVERFLOW_ERR;
     }
