@@ -94,16 +94,17 @@ static int create_new_connection(sc_conn_mgr *mgr) {
 }
 
 static void return_500(sc_conn_mgr *mgr, sc_conn *conn) {
-     const char *http_response_500 = 
+    const char *http_response_500 = 
         "HTTP/1.1 500 Internal Server Error\r\n"
         "Content-Type: text/html; charset=UTF-8\r\n"
         "Content-Length: 21\r\n"
         "\r\n"
         "Internal Server Error";
-     send(conn->fd, http_response_500, strlen(http_response_500), 0);
-     close(conn->fd);
-     sc_mgr_conn_pool_release(mgr, conn);                    
-     epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+
+    send(conn->fd, http_response_500, strlen(http_response_500), 0);
+    sc_mgr_conn_pool_release(mgr, conn);                    
+    epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+    close(conn->fd);
 }
 
 void epoll_readd_conn(sc_conn_mgr *mgr, sc_conn *conn) {
@@ -114,9 +115,10 @@ void epoll_readd_conn(sc_conn_mgr *mgr, sc_conn *conn) {
 
     if (epoll_ctl(mgr->epoll_fd, EPOLL_CTL_MOD, conn->fd, &event) == -1) {
         sc_perror(mgr, SC_LL_NORMAL, "[Sculpt] Failed to re-add connection to epoll");
-        close(conn->fd);
         sc_mgr_conn_pool_release(mgr, conn);
         epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, &event);
+        close(conn->fd);
+
     }
 }
 
@@ -125,9 +127,9 @@ void sc_mgr_conn_readd(sc_conn_mgr *mgr, sc_conn *conn) {
 }
 
 void sc_mgr_conn_release(sc_conn_mgr *mgr, sc_conn *conn) {
-    close(conn->fd);
     sc_mgr_conn_pool_release(mgr, conn);
     epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+    close(conn->fd);
 }
 
 static void return_400(sc_conn_mgr *mgr, sc_conn *conn) {
@@ -144,17 +146,14 @@ static void return_400(sc_conn_mgr *mgr, sc_conn *conn) {
         epoll_readd_conn(mgr, conn);
     } else {
         sc_mgr_conn_pool_release(mgr, conn);
-        close(conn->fd);
         epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+        close(conn->fd);
     }
 }
 
 void cleanup_after_error(sc_conn_mgr *mgr, sc_conn *conn) {
     if (conn) {
         return_500(mgr, conn);
-        sc_mgr_conn_pool_release(mgr, conn);
-        close(conn->fd);
-        epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
     }
 }
 
@@ -468,12 +467,12 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
 
                 // if no valid enpoints were found, we return HTTP 404
                 const char *http_response_404 = 
-                "HTTP/1.1 404 NOT FOUND\r\n"
-                "Content-Type: text/html; charset=UTF-8\r\n"
-                "Content-Length: 9\r\n"
-                "Connection: keep-alive\r\n"
-                "\r\n"
-                "NOT FOUND";
+                    "HTTP/1.1 404 NOT FOUND\r\n"
+                    "Content-Type: text/html; charset=UTF-8\r\n"
+                    "Content-Length: 9\r\n"
+                    "Connection: keep-alive\r\n"
+                    "\r\n"
+                    "NOT FOUND";
                 if (send(conn->fd, http_response_404, strlen(http_response_404), 0) == -1) {
                     sc_perror(mgr, SC_LL_NORMAL, "[Sculpt] Error sending 404 response on unset route");
                 }
@@ -486,9 +485,9 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                         // delete and release connection
 
                         sc_log(mgr, SC_LL_DEBUG, "[Sculpt] Connection close requested\n");
-                        close(conn->fd);
                         sc_mgr_conn_pool_release(mgr, conn);
                         epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+                        close(conn->fd);
                     } else {
                         // re-add the connection to epoll for further requests
 
