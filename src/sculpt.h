@@ -66,7 +66,7 @@
 #define SC_PROTOCOL_HTTP 1
 #define SC_PROTOCOL_CUSTOM 2
 
-// utils
+// SECTION 1: Utils
 
 /* Describes a string with len attribute. The string can either be kept as a copy of the memory passed in the mk methods, or as a reference.*/
 typedef struct {
@@ -115,11 +115,8 @@ void sc_header_free(sc_headers *headers);
 sc_headers *parse_headers(const char *headers_str);
 
 
-/* describes a linked list of the set endpoints */
+// SECTION 2: Connection management
 
-// headers
-
-// actual framework
 typedef struct {
     struct sockaddr_in _sock_addr;
     int port;
@@ -137,6 +134,9 @@ typedef struct sc_conn {
     } state;
     struct sc_conn *next;
 } sc_conn;
+
+
+// SECTION 3: Sculpt's internal management
 
 typedef struct _sc_mgr {
     sc_addr_info addr_info;         
@@ -191,12 +191,17 @@ void sc_mgr_conns_cleanup(sc_conn_mgr *mgr);
 
 int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms);
 
-// sending and recieving data utils
+
+// SECTION 4: `easy` utils
 
 int sc_easy_send(int fd, int code, const char *code_str, const char *content_type, const char *body, sc_headers *headers);
 char *sc_easy_request_build(int code, const char *code_str, const char *body, sc_headers *headers);
 int sc_easy_send2(int fd, int code, const char *code_str, const char *body, sc_headers *headers);
 
+
+// SECTION 5: Endpoint parsing
+
+/* describes a linked list of the set endpoints */
 struct _endpoint_list {
     sc_str val;
     void (*func)(int, sc_http_msg, sc_headers*, void*);
@@ -209,7 +214,7 @@ int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_h
 int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*, void*));
 
 
-// logging
+// SECTION 6: Logging
 
 void sc_log(sc_conn_mgr *mgr, int ll, const char *format, ...);
 void sc_error_log(sc_conn_mgr *mgr, int ll, const char *format, ...);

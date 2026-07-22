@@ -4,6 +4,7 @@
 #include <netdb.h>
 #include <stdbool.h>
 #include <errno.h>
+#include <sys/epoll.h>
 #include <time.h>
 
 #include <sys/types.h>
@@ -102,12 +103,10 @@ static void return_500(sc_conn_mgr *mgr, sc_conn *conn) {
         "Internal Server Error";
 
     send(conn->fd, http_response_500, strlen(http_response_500), 0);
-    sc_mgr_conn_pool_release(mgr, conn);                    
-    epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-    close(conn->fd);
+    sc_mgr_conn_release(mgr, conn);
 }
 
-void epoll_readd_conn(sc_conn_mgr *mgr, sc_conn *conn) {
+static void epoll_readd_conn(sc_conn_mgr *mgr, sc_conn *conn) {
     struct epoll_event event = {
         .events = EPOLLIN | EPOLLRDHUP | EPOLLONESHOT,
         .data.ptr = conn
@@ -115,10 +114,7 @@ void epoll_readd_conn(sc_conn_mgr *mgr, sc_conn *conn) {
 
     if (epoll_ctl(mgr->epoll_fd, EPOLL_CTL_MOD, conn->fd, &event) == -1) {
         sc_perror(mgr, SC_LL_NORMAL, "[Sculpt] Failed to re-add connection to epoll");
-        sc_mgr_conn_pool_release(mgr, conn);
-        epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, &event);
-        close(conn->fd);
-
+        sc_mgr_conn_release(mgr, conn);
     }
 }
 
@@ -127,9 +123,18 @@ void sc_mgr_conn_readd(sc_conn_mgr *mgr, sc_conn *conn) {
 }
 
 void sc_mgr_conn_release(sc_conn_mgr *mgr, sc_conn *conn) {
-    sc_mgr_conn_pool_release(mgr, conn);
-    epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+    if (!mgr || !conn || conn->fd < 0) {
+        return;
+    }
+
+    if (epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL) == -1) {
+        sc_perror(mgr, SC_LL_DEBUG, "[Sculpt] epoll_ctl DEL failed");
+    }
+
     close(conn->fd);
+    conn->fd = -1;
+    
+    sc_mgr_conn_pool_release(mgr, conn);
 }
 
 static void return_400(sc_conn_mgr *mgr, sc_conn *conn) {
@@ -145,9 +150,7 @@ static void return_400(sc_conn_mgr *mgr, sc_conn *conn) {
     if (conn->persistent) {
         epoll_readd_conn(mgr, conn);
     } else {
-        sc_mgr_conn_pool_release(mgr, conn);
-        epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-        close(conn->fd);
+        sc_mgr_conn_release(mgr, conn);
     }
 }
 
@@ -382,16 +385,12 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
             }
             if (mgr->events[i].events & (EPOLLERR)) {
                 sc_perror(mgr, SC_LL_MINIMAL, "[Sculpt] Critical: error with epoll in new event, closing connection");
-                epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-                close(conn->fd);
-                sc_mgr_conn_pool_release(mgr, conn);
+                sc_mgr_conn_release(mgr, conn);
                 continue;
             }
             if (mgr->events[i].events & (EPOLLHUP)) {
                 sc_perror(mgr, SC_LL_DEBUG, "[Sculpt] Client closed its connection.");
-                epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-                close(conn->fd);
-                sc_mgr_conn_pool_release(mgr, conn);
+                sc_mgr_conn_release(mgr, conn);
                 continue;
             } // will not handle EPOLLRDHUP, as the header parsing function already handles EOF
 
@@ -414,9 +413,7 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                         continue;
                     } else if (err == SC_CONN_CLOSED) {
                         sc_log(mgr, SC_LL_NORMAL, "[Sculpt] Detected socket closing during header pasrsing; closing the connection with the client\n");
-                        epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-                        close(conn->fd);
-                        sc_mgr_conn_pool_release(mgr, conn);
+                        sc_mgr_conn_release(mgr, conn);
                         continue;
                     } else if (err != SC_OK) {
                         sc_error_log(mgr, SC_LL_DEBUG, "[Sculpt] Returning 500 dure to internal server error while getting headers\n"); 
@@ -485,9 +482,7 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                         // delete and release connection
 
                         sc_log(mgr, SC_LL_DEBUG, "[Sculpt] Connection close requested\n");
-                        sc_mgr_conn_pool_release(mgr, conn);
-                        epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-                        close(conn->fd);
+                        sc_mgr_conn_release(mgr, conn);
                     } else {
                         // re-add the connection to epoll for further requests
 
