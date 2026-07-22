@@ -167,7 +167,9 @@ int next_header(sc_conn_mgr *mgr, int fd, char *header, size_t buf_len) {
     char last_char = '\0';
 
     while (1) {
-        if (header_len > buf_len) { // stop if the header is larger than the buffer
+        // stop if the header is larger than the buffer
+        // only checking header_len > buf_len could lead to a two-byte overflow, since it reads into header[buf_len] and writes `\0` at buf_len + 1
+        if (header_len >= buf_len - 1) {
             return SC_BUFFER_OVERFLOW_ERR;
         }
 
