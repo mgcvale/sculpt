@@ -58,7 +58,7 @@ static int create_new_connection(sc_conn_mgr *mgr) {
     }
 
     // valid connection was found, so we accept the request
-     conn->fd = accept(mgr->fd, (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
+    conn->fd = accept(mgr->fd, (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
 
     if (conn->fd == -1) {
         sc_perror(mgr,  SC_LL_NORMAL, "[Sculpt] Error on Accept. Checking severity\n");
@@ -404,7 +404,6 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
                 sc_headers *headers = NULL;
                 void *extra_data = NULL;
                 if (mgr->protocol == SC_PROTOCOL_HTTP) { // parsing of HTTP headers
-                    sc_headers *headers = NULL;
                     int err = parse_all_headers(mgr, conn, &headers, &http_msg);
                     
                     if (err == SC_MALFORMED_HEADER_ERR || err == SC_BUFFER_OVERFLOW_ERR) {
