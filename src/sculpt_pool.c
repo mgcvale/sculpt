@@ -54,7 +54,7 @@ sc_conn *sc_mgr_conn_get_free(sc_conn_mgr *mgr) {
         
         sc_log(mgr, SC_LL_DEBUG, "All connections are being used; releasing the oldest inactive one.\n");
         
-        sc_conn *oldest;
+        sc_conn *oldest = &mgr->conn_pool[0];
         time_t oldest_time = time(NULL);
         for (size_t i = 0; i < mgr->max_conn_count; i++) {
             sc_conn *conn = &mgr->conn_pool[i];
