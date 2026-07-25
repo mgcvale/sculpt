@@ -79,26 +79,26 @@
 #define SC_PROTOCOL_HTTP 1
 #define SC_PROTOCOL_CUSTOM 2
 
-    // SECTION 1: Utils
+// SECTION 1: Utils
 
-    /* Describes a string with len attribute. The string can either be kept as a copy of the memory passed in the mk methods, or as a reference.*/
-    typedef struct {
-        char *buf;
-        size_t len;
-    } sc_str;
+/* Describes a string with len attribute. The string can either be kept as a copy of the memory passed in the mk methods, or as a reference.*/
+typedef struct {
+    char *buf;
+    size_t len;
+} sc_str;
 
-    /* Creates a sc_str from char buffer, REFERENCING its contents. Assumes null-terminated string*/
-    sc_str sc_str_ref(const char *str);
+/* Creates a sc_str from char buffer, REFERENCING its contents. Assumes null-terminated string*/
+sc_str sc_str_ref(const char *str);
 
-    /* Creates a sc_str from a char buffer with length, REFERENCING its contents. Does not assume null-terminated string*/
-    sc_str sc_str_ref_n(const char *str, size_t len);
+/* Creates a sc_str from a char buffer with length, REFERENCING its contents. Does not assume null-terminated string*/
+sc_str sc_str_ref_n(const char *str, size_t len);
 
-    /* Creates a sc_str from a char buffer, COPYING its contents. Assumes null-terminated string*/
-    /* Note: this method requires freeing the string after use. */
-    sc_str sc_str_copy(const char *str);
+/* Creates a sc_str from a char buffer, COPYING its contents. Assumes null-terminated string*/
+/* Note: this method requires freeing the string after use. */
+sc_str sc_str_copy(const char *str);
 
-    /* Creates a sc_str from a char buffer with length, COPYING its contents. Does not assume null-terminated string*/
-    /* Note: this method requires freeing the string after use. */
+/* Creates a sc_str from a char buffer with length, COPYING its contents. Does not assume null-terminated string*/
+/* Note: this method requires freeing the string after use. */
 sc_str sc_str_copy_n(const char *str, size_t len);
 
 /* Assumes string was created with sc_str_copy function. */
