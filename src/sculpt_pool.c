@@ -70,7 +70,7 @@ sc_conn *sc_mgr_conn_get_free(sc_conn_mgr *mgr) {
         time_t oldest_time = time(NULL);
         for (size_t i = 0; i < mgr->max_conn_count; i++) {
             sc_conn *conn = &mgr->conn_pool[i];
-            if (conn->last_active < oldest_time) {
+            if (conn->state == CONN_ACTIVE && conn->last_active < oldest_time) {
                 oldest_time = conn->last_active;
                 oldest = conn;
             }
@@ -79,6 +79,8 @@ sc_conn *sc_mgr_conn_get_free(sc_conn_mgr *mgr) {
         // release the oldest connection
         sc_mgr_conn_release(mgr, oldest);
     }
+
+    if (!mgr->free_conns) return NULL;
 
     // pop first free conn from list
     sc_conn *conn = mgr->free_conns;
