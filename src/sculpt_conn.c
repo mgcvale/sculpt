@@ -71,7 +71,7 @@ static int create_new_connection(sc_conn_mgr *mgr) {
     // new connection, check capacity before proceeding
     sc_conn *conn = sc_mgr_conn_get_free(mgr);
     if (conn == NULL) {
-        sc_perror(mgr, SC_LL_NORMAL, "[Sculpt] ERROR No avaliable connections found! Sending 503 response");
+        sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] ERROR No avaliable connections found! Sending 503 response\n");
         int client_fd = accept(mgr->fd, (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
         if (client_fd != -1) {
              static const char *msg = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 21\r\n\r\nServer at capacity\r\n";
@@ -85,10 +85,10 @@ static int create_new_connection(sc_conn_mgr *mgr) {
     conn->fd = accept(mgr->fd, (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
 
     if (conn->fd == -1) {
-        sc_perror(mgr,  SC_LL_NORMAL, "[Sculpt] Error on Accept. Checking severity\n");
+        sc_perror(mgr,  SC_LL_NORMAL, "[Sculpt] Error on Accept. Checking severity");
         sc_mgr_conn_pool_release(mgr, conn);
         if (errno != EAGAIN && errno != EWOULDBLOCK) { // if the error is not because it would block or cuz it is unavailable, we don't return the function
-            sc_perror(mgr, SC_LL_DEBUG, "[Scupt] Accept error:");  
+            sc_perror(mgr, SC_LL_DEBUG, "[Sculpt] Accept error:");  
             return SC_ACCEPT_ERR;
         }
         return SC_CONTINUE;
@@ -149,7 +149,7 @@ void sc_mgr_conn_readd(sc_conn_mgr *mgr, sc_conn *conn) {
 void sc_mgr_conn_release(sc_conn_mgr *mgr, sc_conn *conn) {
     if (!check_conn_state(mgr)) return;
     if (!conn || conn->fd < 0) {
-        sc_error_log(mgr, SC_LL_NORMAL, "Tried calling sc_mgr_conn_release with an invalid connection; skipping");
+        sc_error_log(mgr, SC_LL_NORMAL, "Tried calling sc_mgr_conn_release with an invalid connection; skipping\n");
         return;
     }
 
