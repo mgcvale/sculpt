@@ -20,7 +20,7 @@ sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
     sc_conn_mgr *mgr = calloc(1, sizeof(sc_conn_mgr));
     if (mgr == NULL) {
         perror("[Sculpt] Error: memory allocation for sc_conn_mgr");
-        *err = SC_MALLOC_ERR;
+        if (err != NULL) *err = SC_MALLOC_ERR;
         return NULL;
     }
 
@@ -40,20 +40,20 @@ sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
     if (mgr->fd < 0) {
         sc_perror(mgr, SC_LL_MINIMAL, "[Sculpt] Error: error creating socket for conn_mgr");
         free(mgr);
-        *err = SC_SOCKET_CREATION_ERR;
+        if (err != NULL) *err = SC_SOCKET_CREATION_ERR;
         return NULL;
     }
     
     int opt = 1;
     if (setsockopt(mgr->fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(int)) < 0) {
         sc_perror(mgr, SC_LL_MINIMAL, "[Sculpt] Error: failed to set socket options");
-        *err = SC_SOCKET_SETOPT_ERR;
+        if (err != NULL) *err = SC_SOCKET_SETOPT_ERR;
         goto error;
     }
 
     if (bind(mgr->fd, (struct sockaddr *)&mgr->addr_info, sizeof(mgr->addr_info))) {
         sc_perror(mgr, SC_LL_MINIMAL, "[Sculpt] Error: Failed to bind server to the address");
-        *err = SC_SOCKET_BIND_ERR;
+        if (err != NULL) *err = SC_SOCKET_BIND_ERR;
         goto error;
     }
 
