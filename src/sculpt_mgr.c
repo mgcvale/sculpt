@@ -17,7 +17,7 @@ sc_addr_info sc_addr_create(int sin_family, int port, int inaddr) {
 
 sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
     *err = SC_OK;
-    sc_conn_mgr *mgr = malloc(sizeof(sc_conn_mgr));
+    sc_conn_mgr *mgr = calloc(1, sizeof(sc_conn_mgr));
     if (mgr == NULL) {
         perror("[Sculpt] Error: memory allocation for sc_conn_mgr");
         *err = SC_MALLOC_ERR;
@@ -25,7 +25,7 @@ sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
     }
 
     signal(SIGPIPE, SIG_IGN);
-
+    
     mgr->addr_info = addr_mgr;
     mgr->backlog = SC_DEFAULT_BACKLOG;
     mgr->max_events = SC_DEFAULT_EPOLL_MAXEVENTS;
@@ -57,6 +57,7 @@ sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
         goto error;
     }
 
+    mgr->mgr_initialized = true;
     return mgr;
 
     error:
@@ -82,6 +83,9 @@ void sc_mgr_conn_recycling_set(sc_conn_mgr *mgr, bool recycle) {
 }
 
 int sc_mgr_listen(sc_conn_mgr *mgr) {
+    FPRINTF_RETURN_ERROR_IF(!mgr, SC_BAD_ARGUMENTS_ERR, "[Sculpt] NULL manager provided");
+    FPRINTF_RETURN_ERROR_IF(!mgr->mgr_initialized, SC_BAD_STATE_ERR, "[Sculpt] initialize sc_conn_mgr via sc_mgr_create before calling sc_mgr_listen");
+
     if (listen(mgr->fd, mgr->backlog) < 0) {
         perror("Error: error in listen()");
         return SC_SOCKET_LISTEN_ERR;
@@ -93,7 +97,7 @@ int sc_mgr_listen(sc_conn_mgr *mgr) {
                         mgr->service_buf, sizeof(mgr->service_buf), 0);
     if (rc != 0) {
         sc_error_log(mgr, SC_LL_MINIMAL, "[Sculpt] Warning: %s; ", gai_strerror(rc));
-        sc_error_log(mgr, SC_LL_MINIMAL, "Server is listening on unknown URL\n");
+        sc_error_log(mgr, SC_LL_MINIMAL, "[Sculpt] Server is listening on unknown URL\n");
         return SC_SOCKET_GETNAMEINFO_ERR;
     }
 
@@ -104,22 +108,33 @@ int sc_mgr_listen(sc_conn_mgr *mgr) {
 }
 
 void sc_mgr_finish(sc_conn_mgr *mgr) {
-    if (!mgr) {
+    if (!mgr || !mgr->mgr_initialized) {
+        // mgr wasn't initialized. We don't have to log anything - we can just
+        // fail silently, considering the manager wasn't initialized anyway
         return;
     }
 
-    sc_mgr_conn_pool_destroy(mgr);
-    sc_log(mgr, SC_LL_DEBUG, "[Sculpt]freed conn pool\n");
+    if (mgr->pool_initialized) {
+        sc_mgr_conn_pool_destroy(mgr);
+        sc_log(mgr, SC_LL_DEBUG, "[Sculpt] freed conn pool\n");
+    } else {
+        sc_log(mgr, SC_LL_DEBUG, "[Sculpt] didn't free conn pool because it wasn't initialized\n");
+    }
 
     // close epoll fd and free events array
+    // we should close epoll's fd even if epoll_initialized is false - cause it may be present even when that flag is false.
+
     if (mgr->epoll_fd >= 0) {
         close(mgr->epoll_fd);
         mgr->epoll_fd = -1;
     }
-    free(mgr->events);
-    mgr->events = NULL; // !! dangling pointers
-
-    sc_log(mgr, SC_LL_DEBUG, "[Sculpt] freed epoll\n");
+    if (mgr->epoll_initialized) {
+        free(mgr->events);
+        mgr->events = NULL;
+        sc_log(mgr, SC_LL_DEBUG, "[Sculpt] freed epoll\n");
+    } else {
+        sc_log(mgr, SC_LL_DEBUG, "[Sculpt] didn't free epoll because it wasn't initialized; closed epoll's fd nonetheless\n");
+    }
 
     // close server socket
     if (mgr->fd >= 0) {

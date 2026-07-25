@@ -13,6 +13,15 @@
 #include <sys/epoll.h>
 #include <fcntl.h>
 
+#define FPRINTF_RETURN_ERROR_IF(condition, error_code, message) \
+    do { \
+        if (condition) { \
+            fprintf(stderr, "%s", message); \
+            return error_code; \
+        } \
+    } while (0)
+
+
 #define RETURN_ERROR_IF(condition, error_code, message) \
     do { \
         if (condition) { \
@@ -44,6 +53,7 @@
 #define SC_CONN_CLOSE -19
 #define SC_HEADER_PARSE_ERR -20
 #define SC_HEADER_PARSE_INCOMPLETE_ERR -21
+#define SC_BAD_STATE_ERR -22
 
 #define SC_DEFAULT_BACKLOG 128
 #define SC_DEFAULT_EPOLL_MAXEVENTS 12
@@ -60,6 +70,7 @@
 #define SC_BREAK 2
 #define SC_MAX_HEADER_ERROR_COUNT 12
 
+
 #define SC_LL_NONE 0
 #define SC_LL_MINIMAL 1
 #define SC_LL_NORMAL 2
@@ -68,26 +79,26 @@
 #define SC_PROTOCOL_HTTP 1
 #define SC_PROTOCOL_CUSTOM 2
 
-// SECTION 1: Utils
+    // SECTION 1: Utils
 
-/* Describes a string with len attribute. The string can either be kept as a copy of the memory passed in the mk methods, or as a reference.*/
-typedef struct {
-    char *buf;
-    size_t len;
-} sc_str;
+    /* Describes a string with len attribute. The string can either be kept as a copy of the memory passed in the mk methods, or as a reference.*/
+    typedef struct {
+        char *buf;
+        size_t len;
+    } sc_str;
 
-/* Creates a sc_str from char buffer, REFERENCING its contents. Assumes null-terminated string*/
-sc_str sc_str_ref(const char *str);
+    /* Creates a sc_str from char buffer, REFERENCING its contents. Assumes null-terminated string*/
+    sc_str sc_str_ref(const char *str);
 
-/* Creates a sc_str from a char buffer with length, REFERENCING its contents. Does not assume null-terminated string*/
-sc_str sc_str_ref_n(const char *str, size_t len);
+    /* Creates a sc_str from a char buffer with length, REFERENCING its contents. Does not assume null-terminated string*/
+    sc_str sc_str_ref_n(const char *str, size_t len);
 
-/* Creates a sc_str from a char buffer, COPYING its contents. Assumes null-terminated string*/
-/* Note: this method requires freeing the string after use. */
-sc_str sc_str_copy(const char *str);
+    /* Creates a sc_str from a char buffer, COPYING its contents. Assumes null-terminated string*/
+    /* Note: this method requires freeing the string after use. */
+    sc_str sc_str_copy(const char *str);
 
-/* Creates a sc_str from a char buffer with length, COPYING its contents. Does not assume null-terminated string*/
-/* Note: this method requires freeing the string after use. */
+    /* Creates a sc_str from a char buffer with length, COPYING its contents. Does not assume null-terminated string*/
+    /* Note: this method requires freeing the string after use. */
 sc_str sc_str_copy_n(const char *str, size_t len);
 
 /* Assumes string was created with sc_str_copy function. */
@@ -144,6 +155,11 @@ typedef struct sc_conn {
 // SECTION 3: Sculpt's internal management
 
 typedef struct _sc_mgr {
+    // initialization states
+    bool mgr_initialized;
+    bool epoll_initialized;
+    bool pool_initialized;
+
     sc_addr_info addr_info;         
     int fd;                         // server file descriptor
     int backlog;                    // server backlog count

@@ -15,12 +15,29 @@
 #include "sculpt.h"
 
 
+
 int next_header(sc_conn_mgr *mgr, int fd, char *header, size_t buf_len);
 int get_http_msg(sc_conn_mgr *mgr, char *header, sc_http_msg *http_msg);
 int parse_all_headers(sc_conn_mgr *mgr, sc_conn *conn, sc_headers **headers, sc_http_msg *http_msg);
 
+static bool check_conn_state(sc_conn_mgr *mgr) {
+    FPRINTF_RETURN_ERROR_IF(!mgr || !mgr->mgr_initialized, false, "[Sculpt] Detected bad state during connection/epoll management (sc_conn_mgr is NULL or unitialized)");
+    if (!mgr->pool_initialized || !mgr->epoll_initialized) {
+        sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] Detected connection/epoll management with unitialized epoll or connection pool. Call the init functions for epoll and connection pooling before polling for requests.\n");
+        return false;
+    }
+    if (!mgr->listening) {
+        sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] Detected connection/epoll management before starting listening to requests. Call sc_mgr_listen() before polling for requests\n");
+        return false;
+    }
+
+    return true;
+}
+
 int sc_mgr_epoll_init(sc_conn_mgr *mgr) {
-    RETURN_ERROR_IF(!mgr, SC_BAD_ARGUMENTS_ERR, "[Sculpt] NULL manager provided");
+    FPRINTF_RETURN_ERROR_IF(!mgr, SC_BAD_ARGUMENTS_ERR, "[Sculpt] NULL manager provided");
+    FPRINTF_RETURN_ERROR_IF(!mgr->mgr_initialized, SC_BAD_STATE_ERR, "[Sculpt] Initialize sc_conn_mgr via sc_mgr_create before calling sc_mgr_epoll_init");
+    FPRINTF_RETURN_ERROR_IF(mgr->epoll_initialized, SC_BAD_STATE_ERR, "[Sculpt] Epoll was already initialized");
 
     // using EPOLL_CLOEXEC to prevent fd leaks across exec()
     mgr->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
@@ -38,11 +55,16 @@ int sc_mgr_epoll_init(sc_conn_mgr *mgr) {
                    SC_EPOLL_CTL_ERR, "[Sculpt] epoll_ctl failed");
 
     mgr->events = calloc(mgr->max_events, sizeof(struct epoll_event)); 
-    RETURN_ERROR_IF(!mgr->events, SC_MALLOC_ERR, "[Sculpt] Failed to allocate events array");return SC_OK;
+    RETURN_ERROR_IF(!mgr->events, SC_MALLOC_ERR, "[Sculpt] Failed to allocate events array");
+
+    mgr->epoll_initialized = true;
+    return SC_OK;
 }
 
 static int create_new_connection(sc_conn_mgr *mgr) {
-    RETURN_ERROR_IF(!mgr, SC_BAD_ARGUMENTS_ERR, "[Sculpt] NULL manager provided");
+    FPRINTF_RETURN_ERROR_IF(!mgr, SC_BAD_ARGUMENTS_ERR, "[Sculpt] NULL manager provided");
+    FPRINTF_RETURN_ERROR_IF(!mgr->mgr_initialized, SC_BAD_STATE_ERR, "[Sculpt] uinitialized manager provided");
+
     sc_log(mgr, SC_LL_DEBUG,  "[Sculpt] INFO Creating new connection\n"); 
     socklen_t addr_len = sizeof(mgr->addr_info._sock_addr);
 
@@ -120,16 +142,19 @@ static void epoll_readd_conn(sc_conn_mgr *mgr, sc_conn *conn) {
 }
 
 void sc_mgr_conn_readd(sc_conn_mgr *mgr, sc_conn *conn) {
+    if (!check_conn_state(mgr)) return;
     epoll_readd_conn(mgr, conn);
 }
 
 void sc_mgr_conn_release(sc_conn_mgr *mgr, sc_conn *conn) {
-    if (!mgr || !conn || conn->fd < 0) {
+    if (!check_conn_state(mgr)) return;
+    if (!conn || conn->fd < 0) {
+        sc_log(mgr, SC_LL_NORMAL, "Tried calling sc_mgr_conn_release with an invalid connection; skipping");
         return;
     }
 
     if (epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL) == -1) {
-        sc_perror(mgr, SC_LL_DEBUG, "[Sculpt] epoll_ctl DEL failed");
+        sc_perror(mgr, SC_LL_NORMAL, "[Sculpt] epoll_ctl DEL failed");
     }
 
     close(conn->fd);
@@ -162,14 +187,22 @@ void cleanup_after_error(sc_conn_mgr *mgr, sc_conn *conn) {
 }
 
 int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
-    RETURN_ERROR_IF(!mgr, SC_BAD_ARGUMENTS_ERR, "[Sculpt] The mgr pointer cant be null");
+    // here I will use the manual macro instead of calling check_mgr_state because 
+    // I need fine-grained control on the return code (eg BAD_ARGUMENTS, BAD_STATE, etc)
+    FPRINTF_RETURN_ERROR_IF(!mgr, SC_BAD_ARGUMENTS_ERR, "[Sculpt] The mgr pointer cant be null");
+    FPRINTF_RETURN_ERROR_IF(!mgr->mgr_initialized, SC_BAD_STATE_ERR, "[Sculpt] Initialize sc_conn_mgr via sc_mgr_create before calling sc_mgr_poll");
+    FPRINTF_RETURN_ERROR_IF(!mgr->epoll_initialized, SC_BAD_STATE_ERR, "[Sculpt] Initialize epoll via sc_mgr_epoll_init before calling sc_mgr_poll");
+    FPRINTF_RETURN_ERROR_IF(!mgr->pool_initialized, SC_BAD_STATE_ERR, "[Sculpt] Initialize connection pooling via sc_mgr_conn_pool_init before calling sc_mgr_poll");
+    FPRINTF_RETURN_ERROR_IF(!mgr->listening, SC_BAD_STATE_ERR, "[Sculpt] Start server's listening with sc_mgr_listen before calling sc_mgr_poll");
+
+
     sc_mgr_conns_cleanup(mgr);
 
     // wait for some event in epoll and handle errors
     int n = epoll_wait(mgr->epoll_fd, mgr->events, mgr->max_events, timeout_ms);
     if (n == -1) {
         if (errno == EINTR) { // not an error - the system just got interrupted mid syscall
-            sc_error_log(mgr, SC_LL_DEBUG, "[Sculpt] Warning - epoll_wait interrupted (errno = EINTR)");
+            sc_error_log(mgr, SC_LL_DEBUG, "[Sculpt] Warning - epoll_wait interrupted (errno = EINTR)\n");
             return SC_OK;
         }
         sc_perror(mgr, SC_LL_DEBUG, "[Sculpt] Error on epoll_wait");
@@ -185,7 +218,7 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
        // handle errors with the epoll event
         if (mgr->events[i].events & EPOLLERR) {
             sc_conn *conn = mgr->events[i].data.ptr;
-            sc_perror(mgr, SC_LL_MINIMAL, "[Sculpt] Error with epoll, closing connection...");
+            sc_error_log(mgr, SC_LL_MINIMAL, "[Sculpt] Error with epoll, closing connection...\n");
             cleanup_after_error(mgr, conn);
             continue;
         }
@@ -200,16 +233,16 @@ int sc_mgr_poll(sc_conn_mgr *mgr, int timeout_ms) {
 
             sc_conn *conn = mgr->events[i].data.ptr; // get the connection and handle errors
             if (!conn) {
-                sc_perror(mgr, SC_LL_MINIMAL, "[Sculpt] Critical: Error gathering connection struct from epoll event");
+                sc_error_log(mgr, SC_LL_MINIMAL, "[Sculpt] Critical: Error gathering connection struct from epoll event\n");
                 continue;
             }
             if (mgr->events[i].events & (EPOLLERR)) {
-                sc_perror(mgr, SC_LL_MINIMAL, "[Sculpt] Critical: error with epoll in new event, closing connection");
+                sc_error_log(mgr, SC_LL_MINIMAL, "[Sculpt] Critical: error with epoll in new event, closing connection\n");
                 sc_mgr_conn_release(mgr, conn);
                 continue;
             }
             if (mgr->events[i].events & (EPOLLHUP)) {
-                sc_perror(mgr, SC_LL_DEBUG, "[Sculpt] Client closed its connection.");
+                sc_error_log(mgr, SC_LL_DEBUG, "[Sculpt] Client closed its connection.\n");
                 sc_mgr_conn_release(mgr, conn);
                 continue;
             } // will not handle EPOLLRDHUP, as the header parsing function already handles EOF

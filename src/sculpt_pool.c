@@ -13,9 +13,19 @@
 
 #include "sculpt.h"
 
+static bool check_pool_state(sc_conn_mgr *mgr) {
+    if (!mgr || !mgr->mgr_initialized || !mgr->pool_initialized) {
+        if (mgr && mgr->mgr_initialized) sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] An error occurred on sc_mgr_conn_* because some sculpt component was not properly initialized\n");
+        else fprintf(stderr, "[Sculpt] An error occurred on sc_mgr_conn_* because some sculpt component was not properly initialized\n");
+        return false;
+    }
+    return true;
+}
 
 int sc_mgr_conn_pool_init(sc_conn_mgr *mgr, int max_conns) {
-    RETURN_ERROR_IF(!mgr, SC_BAD_ARGUMENTS_ERR, "[Sculpt] NULL manager provided");
+    FPRINTF_RETURN_ERROR_IF(!mgr, SC_BAD_ARGUMENTS_ERR, "[Sculpt] NULL manager provided");
+    FPRINTF_RETURN_ERROR_IF(!mgr->mgr_initialized, SC_BAD_STATE_ERR, "[Sculpt] Initialize sc_conn_mgr via sc_mgr_create before calling sc_mgr_conn_pool_init");
+    FPRINTF_RETURN_ERROR_IF(mgr->pool_initialized, SC_BAD_STATE_ERR, "[Sculpt] Connection pool is already initialized; skipping sc_mgr_conn_pool_init");
 
     mgr->max_conn_count = max_conns;
     mgr->conn_count = 0;
@@ -37,18 +47,20 @@ int sc_mgr_conn_pool_init(sc_conn_mgr *mgr, int max_conns) {
     mgr->conn_timeout = SC_DEFAULT_CONN_TIMEOUT;
     mgr->conn_max_age = SC_DEFAULT_CONN_MAX_AGE;
 
+    mgr->pool_initialized = true;
     return SC_OK;
 }
 
 sc_conn *sc_mgr_conn_get_free(sc_conn_mgr *mgr) {
-    if (mgr == NULL) {
-        return NULL; 
+    if (!check_pool_state(mgr)) {
+        return NULL;
     }
+
     if (mgr->conn_count >= mgr->max_conn_count) {
         // all connections are being used.
         // If the recycle_conns parameter is false, we return null. Else, we free the last active conn and return it.
         if (!mgr->recycle_conns) {
-            sc_log(mgr, SC_LL_DEBUG, "recycle_conns is false; returning NULL on conn_get_free");
+            sc_log(mgr, SC_LL_DEBUG, "recycle_conns is false; returning NULL on conn_get_free\n");
             return NULL; 
         }
         
@@ -65,7 +77,6 @@ sc_conn *sc_mgr_conn_get_free(sc_conn_mgr *mgr) {
         }
 
         // release the oldest connection
-        close(oldest->fd);
         sc_mgr_conn_release(mgr, oldest);
     }
 
@@ -88,8 +99,17 @@ sc_conn *sc_mgr_conn_get_free(sc_conn_mgr *mgr) {
 }
 
 void sc_mgr_conn_pool_release(sc_conn_mgr *mgr, sc_conn *conn) {
-    if (!conn) return;
-    if (conn->state == CONN_CLOSING) return;
+    if (!check_pool_state(mgr)) {
+        return;
+    }
+    if (!conn) {
+        sc_log(mgr, SC_LL_DEBUG, "[Sculpt] Null connection passed to sc_mgr_conn_pool_release; ignoring it\n");
+        return;
+    }
+    if (conn->state == CONN_CLOSING) {
+        sc_log(mgr, SC_LL_DEBUG, "[Sculpt] Not releasing connection because its state is CONN_CLOSING\n");
+        return;
+    }
 
     // add connection back to free connection stack
     conn->next = mgr->free_conns;
@@ -103,6 +123,10 @@ void sc_mgr_conn_pool_release(sc_conn_mgr *mgr, sc_conn *conn) {
 }
 
 void sc_mgr_conns_cleanup(sc_conn_mgr *mgr) {
+    if (!check_pool_state(mgr)) {
+        return;
+    }
+
     time_t now = time(NULL);
 
     for (size_t i = 0; i < mgr->max_conn_count; i++) {
@@ -114,14 +138,21 @@ void sc_mgr_conns_cleanup(sc_conn_mgr *mgr) {
             
             // close the fd
             shutdown(conn->fd, SHUT_RDWR);
-            close(conn->fd);
-            epoll_ctl(mgr->epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
             sc_mgr_conn_release(mgr, conn);
         }
     }
 }
 
 void sc_mgr_conn_pool_destroy(sc_conn_mgr *mgr) {
+    if (!mgr || !mgr->mgr_initialized) {
+        fprintf(stderr, "[Sculpt] Can't destroy the connection pool of a NULL or unitialized sc_conn_mgr\n");
+        return;
+    }
+    if (!mgr->pool_initialized) {
+        sc_log(mgr, SC_LL_DEBUG, "[Sculpt] Can't destroy an unitialized connection pool\n"); 
+        return;
+    }
+
     // close all active connections from array
     for (int i = 0; i < mgr->max_conn_count; i++) {
         sc_conn *conn = &mgr->conn_pool[i];
@@ -136,4 +167,6 @@ void sc_mgr_conn_pool_destroy(sc_conn_mgr *mgr) {
     mgr->conn_pool = NULL;
     mgr->free_conns = NULL;
 
+    // pool isn't initialized anymore
+    mgr->pool_initialized = false;
 }

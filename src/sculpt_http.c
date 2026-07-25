@@ -90,7 +90,7 @@ int get_http_msg(sc_conn_mgr *mgr, char *header, sc_http_msg *http_msg) {
     method_buf[method_len] = '\0';
 
     // skip extra spaces
-    const char *uri_start = space + 1;
+    char *uri_start = space + 1;
     while (*uri_start == ' ') uri_start++;
 
     // find uri in header
