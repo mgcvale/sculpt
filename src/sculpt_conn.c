@@ -149,7 +149,7 @@ void sc_mgr_conn_readd(sc_conn_mgr *mgr, sc_conn *conn) {
 void sc_mgr_conn_release(sc_conn_mgr *mgr, sc_conn *conn) {
     if (!check_conn_state(mgr)) return;
     if (!conn || conn->fd < 0) {
-        sc_log(mgr, SC_LL_NORMAL, "Tried calling sc_mgr_conn_release with an invalid connection; skipping");
+        sc_error_log(mgr, SC_LL_NORMAL, "Tried calling sc_mgr_conn_release with an invalid connection; skipping");
         return;
     }
 
