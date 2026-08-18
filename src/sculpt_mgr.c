@@ -6,6 +6,10 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#define MIN(a, b) (((a) < (b)) ? (a) : (b))
+#define MAX(a, b) (((a) > (b)) ? (a) : (b))
+
+
 sc_addr_info sc_addr_create(int sin_family, int port, int inaddr) {
     sc_addr_info addr_mgr;
     addr_mgr._sock_addr.sin_family = sin_family;
@@ -66,6 +70,42 @@ sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
         return NULL;
 }
 
+static char *ll_to_str(int ll) {
+    switch (ll) {
+        case SC_LL_NONE:
+            return "SC_LL_NONE";
+        case SC_LL_MINIMAL:
+            return "SC_LL_MINIMAL";
+        case SC_LL_NORMAL:
+            return "SC_LL_NORMAL";
+        case SC_LL_DEBUG:
+            return "SC_LL_DEBUG";
+        default:
+            return "Unkwon log level";
+    }
+}
+
+void sc_mgr_log_state(sc_conn_mgr *mgr, FILE *file) {
+    const char *format = ""
+        "\n\n[SCULPT STATE LOG]\n"
+        "\tlog level: %s\n"
+        "\tbacklog size: %zu\n"
+        "\tepoll max events: %zu\n"
+        "\trecycle conns: %s\n"
+        "\tmax connection pool capacity: %zu\n"
+        "\tmax connection idle time before closing: %zus\n"
+        "\tprotocol: %s\n\n";
+    fprintf(file, format,
+            ll_to_str(mgr->ll),
+            mgr->backlog,
+            mgr->max_events,
+            mgr->recycle_conns ? "true" : "false",
+            mgr->max_conn_count,
+            mgr->conn_timeout,
+            mgr->protocol == SC_PROTOCOL_HTTP ? "http" : "custom"
+        );
+}
+
 void sc_mgr_backlog_set(sc_conn_mgr *mgr, int backlog) {
     mgr->backlog = backlog;
 }
@@ -75,10 +115,17 @@ void sc_mgr_epoll_maxevents_set(sc_conn_mgr *mgr, int maxevents) {
 }
 
 void sc_mgr_ll_set(sc_conn_mgr *mgr, int ll) {
+    if (ll < SC_LL_NONE || ll > SC_LL_DEBUG) {
+        if (ll > SC_LL_NONE) {
+            fprintf(stderr, "[W] Tried to set invalid log level: got %d; min is %d (SC_LL_NONE); max is %d (SC_LL_DEBUG).\n", ll, SC_LL_NONE, SC_LL_DEBUG);
+        }
+        ll = MIN(MAX(ll, SC_LL_NONE), SC_LL_DEBUG);
+    }
+
     mgr->ll = ll;
 }
 
-void sc_mgr_conn_recycling_set(sc_conn_mgr *mgr, bool recycle) {
+void sc_mgr_conn_recycling_set(sc_conn_mgr *mgr, int recycle) {
     mgr->recycle_conns = recycle;
 }
 

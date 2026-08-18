@@ -11,6 +11,7 @@ add_library(sculpt STATIC
     src/sculpt_header.c
     src/sculpt_conn.c
     src/sculpt_pool.c
+    src/sculpt_config.c
 )
 
 target_include_directories(sculpt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)

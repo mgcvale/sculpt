@@ -73,6 +73,13 @@ int main() {
         fprintf(stderr, "Error on create: %d", error);
         exit(EXIT_FAILURE);
     }
+
+    error = sc_mgr_apply_config(mgr, "config.sculpt");
+    if (error != SC_OK) {
+        fprintf(stderr, "Error applying sculpt config: %d", error);
+        sc_mgr_finish(mgr);
+        exit(EXIT_FAILURE);
+    }
     
     error = sc_mgr_epoll_init(mgr);
     if (error != SC_OK) {
@@ -97,11 +104,11 @@ int main() {
 
     sc_mgr_bind_soft(mgr, "/", root_handler);
 
-    sc_mgr_ll_set(mgr, SC_LL_DEBUG);
-    sc_mgr_conn_recycling_set(mgr, true);
     
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+
+    sc_mgr_log_state(mgr, stdout);
 
     while (!s_exit_flag) {
         sc_mgr_poll(mgr, 1000);

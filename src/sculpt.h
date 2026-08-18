@@ -54,6 +54,8 @@
 #define SC_HEADER_PARSE_ERR -20
 #define SC_HEADER_PARSE_INCOMPLETE_ERR -21
 #define SC_BAD_STATE_ERR -22
+#define SC_NOT_FOUND_ERR -23
+#define SC_CFG_INT_PARSE_ERR -24
 
 #define SC_DEFAULT_BACKLOG 128
 #define SC_DEFAULT_EPOLL_MAXEVENTS 12
@@ -69,7 +71,10 @@
 #define SC_CONTINUE 1
 #define SC_BREAK 2
 #define SC_MAX_HEADER_ERROR_COUNT 12
-
+#define SC_CONFIG_LINE_BUF 128
+#define SC_CONFIG_KEY_BUF 64
+#define SC_CONFIG_VALUE_BUF 64
+#define SC_DEFAULT_CONN_RECYCLING true
 
 #define SC_LL_NONE 0
 #define SC_LL_MINIMAL 1
@@ -180,7 +185,7 @@ typedef struct _sc_mgr {
     size_t max_events;              // max number of epoll events
     struct epoll_event epoll_event; // server epoll event
 
-    // misc
+    // mis
     struct _endpoint_list *endpoints; //linked list of endpoints
     bool listening;     // flag to check listening status
     int ll;             // current log level
@@ -190,8 +195,12 @@ typedef struct _sc_mgr {
     void (*protocol_fallback)(struct _sc_mgr *mgr, sc_conn*, sc_http_msg, sc_headers*, void*, int); // fallback function that will be called when protocl_handler fails
 } sc_conn_mgr;
 
+// Config stuff
 sc_addr_info sc_addr_create(int sin_family, int port, int inaddr);
 sc_conn_mgr *sc_mgr_create(sc_addr_info mgr, int *err);
+void sc_mgr_log_state(sc_conn_mgr *mgr, FILE *file);
+int sc_mgr_apply_config(sc_conn_mgr *mgr, char *configpath);
+int sc_mgr_auto_apply_config(sc_conn_mgr *mgr);
 int sc_mgr_listen(sc_conn_mgr *mgr);
 int sc_mgr_epoll_init(sc_conn_mgr *mgr);
 int sc_mgr_conn_pool_init(sc_conn_mgr *mgr, int max_conn);
@@ -201,7 +210,7 @@ void sc_mgr_conn_release(sc_conn_mgr *mgr, sc_conn *conn);
 void sc_mgr_backlog_set(sc_conn_mgr *mgr, int backlog);
 void sc_mgr_epoll_maxevents_set(sc_conn_mgr *mgr, int maxevents);
 void sc_mgr_ll_set(sc_conn_mgr *mgr, int ll);
-void sc_mgr_conn_recycling_set(sc_conn_mgr *mgr, bool ll);
+void sc_mgr_conn_recycling_set(sc_conn_mgr *mgr, int recycle);
 
 void sc_mgr_finish(sc_conn_mgr *mgr);
 void sc_mgr_conn_pool_destroy(sc_conn_mgr *mgr);
