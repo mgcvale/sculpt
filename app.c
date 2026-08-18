@@ -104,7 +104,6 @@ int main() {
 
     sc_mgr_bind_soft(mgr, "/", root_handler);
 
-    
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 

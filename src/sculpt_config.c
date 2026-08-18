@@ -212,7 +212,7 @@ static int parse_line(char *buf, size_t buf_size, char *key_buf, size_t key_buf_
     return 0;
 }
 
-int sc_mgr_apply_config(sc_conn_mgr *mgr, char *filepath) {
+int sc_mgr_config_apply(sc_conn_mgr *mgr, char *filepath) {
     FPRINTF_RETURN_ERROR_IF(!mgr || !mgr->mgr_initialized, SC_BAD_STATE_ERR, "[Sculpt] Detected bad state during config loading (sc_conn_mgr is NULL or unitialized)\n");
     FPRINTF_RETURN_ERROR_IF(filepath == NULL, SC_BAD_ARGUMENTS_ERR, "Config filepath can't be NULL\n");
     FILE *fptr;
@@ -314,3 +314,4 @@ int sc_mgr_apply_config(sc_conn_mgr *mgr, char *filepath) {
 
     return SC_OK;
 }
+
