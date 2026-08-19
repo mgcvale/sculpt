@@ -85,7 +85,7 @@ static char *ll_to_str(int ll) {
     }
 }
 
-void sc_mgr_log_state(sc_conn_mgr *mgr, FILE *file) {
+void sc_mgr_state_log(sc_conn_mgr *mgr, FILE *file) {
     const char *format = ""
         "\n\n[SCULPT STATE LOG]\n"
         "\tlog level: %s\n"

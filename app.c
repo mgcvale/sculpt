@@ -107,7 +107,7 @@ int main() {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
-    sc_mgr_log_state(mgr, stdout);
+    sc_mgr_state_log(mgr, stdout);
 
     while (!s_exit_flag) {
         sc_mgr_poll(mgr, 1000);

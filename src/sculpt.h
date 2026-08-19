@@ -198,7 +198,7 @@ typedef struct _sc_mgr {
 // Config stuff
 sc_addr_info sc_addr_create(int sin_family, int port, int inaddr);
 sc_conn_mgr *sc_mgr_create(sc_addr_info mgr, int *err);
-void sc_mgr_log_state(sc_conn_mgr *mgr, FILE *file);
+void sc_mgr_state_log(sc_conn_mgr *mgr, FILE *file);
 int sc_mgr_config_apply(sc_conn_mgr *mgr, char *configpath);
 int sc_mgr_config_auto_apply(sc_conn_mgr *mgr);
 int sc_mgr_listen(sc_conn_mgr *mgr);
