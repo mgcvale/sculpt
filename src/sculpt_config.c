@@ -108,11 +108,16 @@ static int apply_conn_recycling(sc_conn_mgr *mgr, sc_cfg_ptr typed_ptr) {
     return apply_generic_bool(mgr, typed_ptr, "connection recycling",sc_mgr_conn_recycling_set);
 }
 
+static int apply_conn_pool_size(sc_conn_mgr *mgr, sc_cfg_ptr typed_ptr) {
+    return apply_generic_int(mgr, typed_ptr, "connection pool size", sc_mgr_conn_pool_size_set);
+}
+
 const struct _config_entry config_registry[] = {
     { "log_level", TYPE_INT, apply_log_level },
     { "backlog_size", TYPE_INT, apply_backlog_size },
     { "epoll_maxevents", TYPE_INT, apply_epoll_maxevents },
-    { "conn_recycling", TYPE_BOOL, apply_conn_recycling }
+    { "conn_recycling", TYPE_BOOL, apply_conn_recycling },
+    { "conn_pool_size", TYPE_INT, apply_conn_pool_size }
 };
 
 static int parse_config_value(sc_cfg_type type, char *val_buf, char *str_result, int* int_result, bool *bool_result, size_t str_result_size, size_t curr_line) {

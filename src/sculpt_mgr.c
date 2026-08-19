@@ -39,6 +39,7 @@ sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
     mgr->ll = SC_LL_NORMAL;
     mgr->recycle_conns = true;
     mgr->protocol = SC_PROTOCOL_HTTP;
+    mgr->conn_pool_size = SC_DEFAULT_CONN_POOL_SIZE;
 
     mgr->fd = socket(AF_INET, SOCK_STREAM, 0);
     if (mgr->fd < 0) {
@@ -100,7 +101,7 @@ void sc_mgr_log_state(sc_conn_mgr *mgr, FILE *file) {
             mgr->backlog,
             mgr->max_events,
             mgr->recycle_conns ? "true" : "false",
-            mgr->max_conn_count,
+            mgr->conn_pool_size,
             mgr->conn_timeout,
             mgr->protocol == SC_PROTOCOL_HTTP ? "http" : "custom"
         );
@@ -127,6 +128,14 @@ void sc_mgr_ll_set(sc_conn_mgr *mgr, int ll) {
 
 void sc_mgr_conn_recycling_set(sc_conn_mgr *mgr, int recycle) {
     mgr->recycle_conns = recycle;
+}
+
+void sc_mgr_conn_pool_size_set(sc_conn_mgr *mgr, int pool_size) {
+    if (mgr->pool_initialized) {
+        sc_error_log(mgr, SC_LL_MINIMAL, "[W] You tried to set the connection pool size to %d *after* the connection pool had already been initialized, which sculpt doesn't support. Set it before calling sc_mgr_conn_pool_init or sc_mgr_init_all. The size will be kept at %d.\n", pool_size, mgr->conn_pool_size);
+        return;
+    }
+    mgr->conn_pool_size = pool_size;
 }
 
 int sc_mgr_listen(sc_conn_mgr *mgr) {

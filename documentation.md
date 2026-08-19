@@ -14,7 +14,6 @@ Here is a simple, sample 'Hello, world!" application made using the sculpt frame
 #include <netinet/in.h>
 
 #define PORT 8000
-#define MAX_CONNECTIONS 8
 
 // handler for requests to the root endpoint ("/")
 // responds with a default JSON message: {"message": "Hello, World!"}
@@ -49,8 +48,8 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    if (sc_mgr_conn_pool_init(mgr, MAX_CONNECTIONS) != SC_OK) {
-        fprintf(stderr, "Error initializing connection pool (max connections: %d)\n", MAX_CONNECTIONS);
+    if (sc_mgr_conn_pool_init(mgr) != SC_OK) {
+        fprintf(stderr, "Error initializing connection pool\n");
         sc_mgr_finish(mgr);
         exit(EXIT_FAILURE);
     }

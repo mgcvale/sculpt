@@ -75,6 +75,7 @@
 #define SC_CONFIG_KEY_BUF 64
 #define SC_CONFIG_VALUE_BUF 64
 #define SC_DEFAULT_CONN_RECYCLING true
+#define SC_DEFAULT_CONN_POOL_SIZE 16
 
 #define SC_LL_NONE 0
 #define SC_LL_MINIMAL 1
@@ -174,7 +175,7 @@ typedef struct _sc_mgr {
     // Connection pool management  
     sc_conn *conn_pool;             // main connection pool
     sc_conn *free_conns;            // free connection pool
-    int max_conn_count;             // max connection count
+    int conn_pool_size;             // max connection count
     int conn_count;         // current connection count
     time_t conn_timeout;            // max connection idle time before closing
     time_t conn_max_age;            // max connection lifetime
@@ -203,7 +204,7 @@ int sc_mgr_config_apply(sc_conn_mgr *mgr, char *configpath);
 int sc_mgr_config_auto_apply(sc_conn_mgr *mgr);
 int sc_mgr_listen(sc_conn_mgr *mgr);
 int sc_mgr_epoll_init(sc_conn_mgr *mgr);
-int sc_mgr_conn_pool_init(sc_conn_mgr *mgr, int max_conn);
+int sc_mgr_conn_pool_init(sc_conn_mgr *mgr);
 void sc_mgr_conn_readd(sc_conn_mgr *mgr, sc_conn *conn);
 void sc_mgr_conn_release(sc_conn_mgr *mgr, sc_conn *conn);
 
@@ -211,6 +212,7 @@ void sc_mgr_backlog_set(sc_conn_mgr *mgr, int backlog);
 void sc_mgr_epoll_maxevents_set(sc_conn_mgr *mgr, int maxevents);
 void sc_mgr_ll_set(sc_conn_mgr *mgr, int ll);
 void sc_mgr_conn_recycling_set(sc_conn_mgr *mgr, int recycle);
+void sc_mgr_conn_pool_size_set(sc_conn_mgr *mgr, int pool_size);
 
 void sc_mgr_finish(sc_conn_mgr *mgr);
 void sc_mgr_conn_pool_destroy(sc_conn_mgr *mgr);
