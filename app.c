@@ -74,7 +74,7 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    error = sc_mgr_apply_config(mgr, "config.sculpt");
+    error = sc_mgr_config_auto_apply(mgr);
     if (error != SC_OK) {
         fprintf(stderr, "Error applying sculpt config: %d", error);
         sc_mgr_finish(mgr);

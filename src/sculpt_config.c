@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <errno.h>
+#include <unistd.h>
 
 typedef enum {
     TYPE_INT,
@@ -315,3 +316,29 @@ int sc_mgr_config_apply(sc_conn_mgr *mgr, char *filepath) {
     return SC_OK;
 }
 
+static inline bool file_exists(const char *name) {
+    return (access(name, F_OK) == 0);
+}
+
+int sc_mgr_config_auto_apply(sc_conn_mgr *mgr) {
+    // we will check for: 1. sculpt.conf; 2. sculpt.txt; 3. config.sculpt
+
+    if (file_exists("sculpt.conf")) {
+        fprintf(stdout, "[Sculpt] [Config Loader] Auto loading config file 'sculpt.conf'\n");
+        return sc_mgr_config_apply(mgr, "sculpt.conf");
+    }
+
+    if (file_exists("sculpt.txt")) {
+        fprintf(stdout, "[Sculpt] [Config Loader] Auto loading config file 'sculpt.txt'\n");
+        return sc_mgr_config_apply(mgr, "sculpt.txt");
+    }
+
+    if (file_exists("config.sculpt")) {
+        fprintf(stdout, "[Sculpt] [Config Loader] Auto loading config file 'config.sculpt'\n");
+        return sc_mgr_config_apply(mgr, "config.sculpt");
+    }
+
+    fprintf(stderr, "[Sculpt] [Config Loader] [W] No valid config file found via the automatic loader. Proceeding with the default config.\n");
+    
+    return SC_NOT_FOUND_ERR;
+}
