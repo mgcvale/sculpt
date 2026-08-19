@@ -76,6 +76,8 @@
 #define SC_CONFIG_VALUE_BUF 64
 #define SC_DEFAULT_CONN_RECYCLING true
 #define SC_DEFAULT_CONN_POOL_SIZE 16
+#define SC_DEFAULT_PORT 8003
+#define SC_DEFAULT_S_ADDR INADDR_ANY
 
 #define SC_LL_NONE 0
 #define SC_LL_MINIMAL 1
@@ -87,7 +89,8 @@
 
 // SECTION 1: Utils
 
-/* Describes a string with len attribute. The string can either be kept as a copy of the memory passed in the mk methods, or as a reference.*/
+/* Describes a string with len attribute. The string can either be kept as a copy of the memory passed in the mk methods, or as a ref:w
+ * erence.*/
 typedef struct {
     char *buf;
     size_t len;
@@ -166,7 +169,9 @@ typedef struct _sc_mgr {
     bool epoll_initialized;
     bool pool_initialized;
 
-    sc_addr_info addr_info;         
+    // networking stuff
+    struct sockaddr_in sock_addr;    
+
     int fd;                         // server file descriptor
     int backlog;                    // server backlog count
     char host_buf[HOST_BUF_LEN];    // hostname buffer
@@ -197,8 +202,7 @@ typedef struct _sc_mgr {
 } sc_conn_mgr;
 
 // Config stuff
-sc_addr_info sc_addr_create(int sin_family, int port, int inaddr);
-sc_conn_mgr *sc_mgr_create(sc_addr_info mgr, int *err);
+sc_conn_mgr *sc_mgr_create(int *err);
 void sc_mgr_state_log(sc_conn_mgr *mgr, FILE *file);
 int sc_mgr_config_apply(sc_conn_mgr *mgr, char *configpath);
 int sc_mgr_config_auto_apply(sc_conn_mgr *mgr);
@@ -213,6 +217,8 @@ void sc_mgr_epoll_maxevents_set(sc_conn_mgr *mgr, int maxevents);
 void sc_mgr_ll_set(sc_conn_mgr *mgr, int ll);
 void sc_mgr_conn_recycling_set(sc_conn_mgr *mgr, int recycle);
 void sc_mgr_conn_pool_size_set(sc_conn_mgr *mgr, int pool_size);
+void sc_mgr_addr_set(sc_conn_mgr *mgr, const char *addr);
+void sc_mgr_port_set(sc_conn_mgr *mgr, unsigned short port);
 
 void sc_mgr_finish(sc_conn_mgr *mgr);
 void sc_mgr_conn_pool_destroy(sc_conn_mgr *mgr);

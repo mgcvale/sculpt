@@ -66,13 +66,13 @@ static int create_new_connection(sc_conn_mgr *mgr) {
     FPRINTF_RETURN_ERROR_IF(!mgr->mgr_initialized, SC_BAD_STATE_ERR, "[Sculpt] uinitialized manager provided");
 
     sc_log(mgr, SC_LL_DEBUG,  "[Sculpt] INFO Creating new connection\n"); 
-    socklen_t addr_len = sizeof(mgr->addr_info._sock_addr);
+    socklen_t addr_len = sizeof(mgr->sock_addr);
 
     // new connection, check capacity before proceeding
     sc_conn *conn = sc_mgr_conn_get_free(mgr);
     if (conn == NULL) {
         sc_error_log(mgr, SC_LL_NORMAL, "[Sculpt] ERROR No avaliable connections found! Sending 503 response\n");
-        int client_fd = accept(mgr->fd, (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
+        int client_fd = accept(mgr->fd, (struct sockaddr*)&mgr->sock_addr, &addr_len);
         if (client_fd != -1) {
              static const char *msg = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 21\r\n\r\nServer at capacity\r\n";
             send(client_fd, msg, strlen(msg), MSG_NOSIGNAL);
@@ -82,7 +82,7 @@ static int create_new_connection(sc_conn_mgr *mgr) {
     }
 
     // valid connection was found, so we accept the request
-    conn->fd = accept(mgr->fd, (struct sockaddr*)&mgr->addr_info._sock_addr, &addr_len);
+    conn->fd = accept(mgr->fd, (struct sockaddr*)&mgr->sock_addr, &addr_len);
 
     if (conn->fd == -1) {
         sc_perror(mgr,  SC_LL_NORMAL, "[Sculpt] Error on Accept. Checking severity");

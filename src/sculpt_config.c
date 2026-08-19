@@ -112,12 +112,32 @@ static int apply_conn_pool_size(sc_conn_mgr *mgr, sc_cfg_ptr typed_ptr) {
     return apply_generic_int(mgr, typed_ptr, "connection pool size", sc_mgr_conn_pool_size_set);
 }
 
+static int apply_addr(sc_conn_mgr *mgr, sc_cfg_ptr typed_ptr) {
+    return apply_generic_str(mgr, typed_ptr, "address", sc_mgr_addr_set);
+}
+
+static int apply_port(sc_conn_mgr *mgr, sc_cfg_ptr typed_ptr) {
+    int value;
+    int err = _sc_cfg_ptr_get_int(typed_ptr, &value);
+    if (err != SC_OK) return err;
+    if (value < 0 || value > 65535) {
+        sc_log(mgr, SC_LL_MINIMAL, "[W] Read an invalid port (%d; either <0 or >65535) in the config file. Ignoring this entry\n", value); 
+        return SC_BAD_ARGUMENTS_ERR;
+    }
+    sc_mgr_port_set(mgr, (unsigned short) value);
+    sc_log(mgr, SC_LL_DEBUG, "Set port to %d via config file\n", value);
+    return SC_OK;
+
+}
+
 const struct _config_entry config_registry[] = {
     { "log_level", TYPE_INT, apply_log_level },
     { "backlog_size", TYPE_INT, apply_backlog_size },
     { "epoll_maxevents", TYPE_INT, apply_epoll_maxevents },
     { "conn_recycling", TYPE_BOOL, apply_conn_recycling },
-    { "conn_pool_size", TYPE_INT, apply_conn_pool_size }
+    { "conn_pool_size", TYPE_INT, apply_conn_pool_size },
+    { "address", TYPE_STR, apply_addr },
+    { "port", TYPE_INT, apply_port }
 };
 
 static int parse_config_value(sc_cfg_type type, char *val_buf, char *str_result, int* int_result, bool *bool_result, size_t str_result_size, size_t curr_line) {
@@ -308,7 +328,7 @@ int sc_mgr_config_apply(sc_conn_mgr *mgr, char *filepath) {
 
         err = entry->config_callback(mgr, typed_config);
         if (err != SC_OK) {
-            fprintf(stderr, "[W] Error code %d when applying config `%s` with key `%s` (line %zu). This is likely an issue with sculpt. Ignoring this entry.\n", err, value_buf, key_buf, curr_line);
+            fprintf(stderr, "[W] Error code %d when applying config `%s` with key `%s` (line %zu). Make sure your config is correct. Ignoring this entry.\n", err, value_buf, key_buf, curr_line);
             continue;
         }
 

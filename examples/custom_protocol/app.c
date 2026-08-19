@@ -175,10 +175,8 @@ void root_handler(int fd, sc_http_msg msg, sc_headers *headers, void *extra_data
 
 int main() {    
     // create and setup socket    
-    sc_addr_info addr_info = sc_addr_create(AF_INET, 8000, INADDR_ANY);
-
     int error;
-    sc_conn_mgr *mgr = sc_mgr_create(addr_info, &error);
+    sc_conn_mgr *mgr = sc_mgr_create(&error);
     if (mgr == NULL) {
         fprintf(stderr, "Error on create: %d", error);
         exit(EXIT_FAILURE);

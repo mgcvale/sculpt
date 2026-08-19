@@ -13,8 +13,6 @@ Here is a simple, sample 'Hello, world!" application made using the sculpt frame
 #include <sys/socket.h>
 #include <netinet/in.h>
 
-#define PORT 8000
-
 // handler for requests to the root endpoint ("/")
 // responds with a default JSON message: {"message": "Hello, World!"}
 void root_handler(int fd, sc_http_msg msg) {
@@ -29,19 +27,15 @@ void root_handler(int fd, sc_http_msg msg) {
 }
 
 int main() {
-    // Step 1: create address info for the server
-    // AF_INET is used for IPv4, and the server will listen on PORT 8000.
-    sc_addr_info addr_info = sc_addr_create(AF_INET, PORT); 
-    
-    // Step 2: initialize connection manager with address info
+    // Step 1: initialize connection manager with default configs
     int error_code = 0;
-    sc_conn_mgr *mgr = sc_mgr_create(addr_info, &error_code);
+    sc_conn_mgr *mgr = sc_mgr_create(&error_code);
     if (mgr == NULL) { 
         fprintf(stderr, "Error creating Sculpt manager: %d\n", error_code);
         exit(EXIT_FAILURE);
     }
 
-    // Step 3: initialize Sculpt components (epoll and connection pool)
+    // Step 2: initialize Sculpt components (epoll and connection pool)
     if (sc_mgr_epoll_init(mgr) != SC_OK) {
         fprintf(stderr, "Error initializing epoll\n");
         sc_mgr_finish(mgr); // Cleanup before exit
@@ -54,19 +48,19 @@ int main() {
         exit(EXIT_FAILURE);
     }
     
-    // Step 4: set up server to listen on the specified port
+    // Step 3: set up server to listen on the specified port
     if (sc_mgr_listen(mgr) != SC_OK) {
-        fprintf(stderr, "Error starting server on port %d\n", PORT);
+        fprintf(stderr, "Error starting server\n");
         sc_mgr_finish(mgr);
         exit(EXIT_FAILURE);
     }
 
-    // Step 5: bind the root URI ("/") to the root_handler function
+    // Step 4: bind the root URI ("/") to the root_handler function
     // using soft binding allows it to match any URI that starts with "/".
     // if we were to use hard binding, it would only match the "/" uri.
     sc_mgr_bind_soft(mgr, "/", root_handler);
     
-    // Step 6: poll the connection manager indefinitely with a timeout of 1000ms
+    // Step 5: poll the connection manager indefinitely with a timeout of 1000ms
     // this listens for incoming connections and handles requests.
     for (;;) {
         sc_mgr_poll(mgr, 1000); // Polls every 1000 ms

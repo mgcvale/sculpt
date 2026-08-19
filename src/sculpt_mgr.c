@@ -9,17 +9,7 @@
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 
-
-sc_addr_info sc_addr_create(int sin_family, int port, int inaddr) {
-    sc_addr_info addr_mgr;
-    addr_mgr._sock_addr.sin_family = sin_family;
-    addr_mgr._sock_addr.sin_port = htons(port);
-    addr_mgr._sock_addr.sin_addr.s_addr = htonl(inaddr);
-    addr_mgr.port = port;
-    return addr_mgr;
-}
-
-sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
+sc_conn_mgr *sc_mgr_create(int *err) {
     *err = SC_OK;
     sc_conn_mgr *mgr = calloc(1, sizeof(sc_conn_mgr));
     if (mgr == NULL) {
@@ -29,8 +19,12 @@ sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
     }
 
     signal(SIGPIPE, SIG_IGN);
-    
-    mgr->addr_info = addr_mgr;
+
+    struct sockaddr_in sock_addr;
+    sock_addr.sin_family = AF_INET;
+    sock_addr.sin_port = htons(SC_DEFAULT_PORT);
+    sock_addr.sin_addr.s_addr = htonl(SC_DEFAULT_S_ADDR);
+    mgr->sock_addr = sock_addr;
     mgr->backlog = SC_DEFAULT_BACKLOG;
     mgr->max_events = SC_DEFAULT_EPOLL_MAXEVENTS;
     mgr->listening = false;
@@ -53,12 +47,6 @@ sc_conn_mgr *sc_mgr_create(sc_addr_info addr_mgr, int *err) {
     if (setsockopt(mgr->fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(int)) < 0) {
         sc_perror(mgr, SC_LL_MINIMAL, "[Sculpt] Error: failed to set socket options");
         if (err != NULL) *err = SC_SOCKET_SETOPT_ERR;
-        goto error;
-    }
-
-    if (bind(mgr->fd, (struct sockaddr *)&mgr->addr_info, sizeof(mgr->addr_info))) {
-        sc_perror(mgr, SC_LL_MINIMAL, "[Sculpt] Error: Failed to bind server to the address");
-        if (err != NULL) *err = SC_SOCKET_BIND_ERR;
         goto error;
     }
 
@@ -138,17 +126,42 @@ void sc_mgr_conn_pool_size_set(sc_conn_mgr *mgr, int pool_size) {
     mgr->conn_pool_size = pool_size;
 }
 
+void sc_mgr_addr_set(sc_conn_mgr *mgr, const char *addr) {
+    if (mgr->listening) {
+        sc_error_log(mgr, SC_LL_MINIMAL, "[W] You tried to set the address *after* sculpt was already listening to requests, so this change will make no effect. All configs must be set right after calling sc_mgr_create() to avoid this kind of error.\n");
+        return;
+    }
+
+    if (inet_pton(AF_INET, addr, &mgr->sock_addr.sin_addr) <= 0) {
+        sc_error_log(mgr, SC_LL_MINIMAL, "[W] The address provided `%s` provided is invalid. Thus, the address wasn't changed.\n", addr);
+    }
+}
+
+void sc_mgr_port_set(sc_conn_mgr *mgr, unsigned short port) {
+    if (mgr->listening) {
+        sc_error_log(mgr, SC_LL_MINIMAL, "[W] You tried to set the port *after* sculpt was already listening to requests, so this change will make no effect. All configs must be set right after calling sc_mgr_create() to avoid this kind of error.\n");
+        return;
+    }
+
+    mgr->sock_addr.sin_port = htons(port);
+}
+
 int sc_mgr_listen(sc_conn_mgr *mgr) {
     FPRINTF_RETURN_ERROR_IF(!mgr, SC_BAD_ARGUMENTS_ERR, "[Sculpt] NULL manager provided");
     FPRINTF_RETURN_ERROR_IF(!mgr->mgr_initialized, SC_BAD_STATE_ERR, "[Sculpt] initialize sc_conn_mgr via sc_mgr_create before calling sc_mgr_listen");
+
+    if (bind(mgr->fd, (struct sockaddr *)&mgr->sock_addr, sizeof(mgr->sock_addr))) {
+        sc_perror(mgr, SC_LL_MINIMAL, "[Sculpt] Error: Failed to bind server to the address");
+        return SC_SOCKET_BIND_ERR;
+    }
 
     if (listen(mgr->fd, mgr->backlog) < 0) {
         perror("Error: error in listen()");
         return SC_SOCKET_LISTEN_ERR;
     }
 
-    printf("Binding to: %s:%d\n", inet_ntoa(mgr->addr_info._sock_addr.sin_addr), ntohs(mgr->addr_info._sock_addr.sin_port));
-    int rc = getnameinfo((struct sockaddr *)&mgr->addr_info, sizeof(mgr->addr_info),
+    printf("Binding to: %s:%d\n", inet_ntoa(mgr->sock_addr.sin_addr), ntohs(mgr->sock_addr.sin_port));
+    int rc = getnameinfo((struct sockaddr *)&mgr->sock_addr, sizeof(mgr->sock_addr),
                         mgr->host_buf, sizeof(mgr->host_buf),
                         mgr->service_buf, sizeof(mgr->service_buf), 0);
     if (rc != 0) {
@@ -157,7 +170,7 @@ int sc_mgr_listen(sc_conn_mgr *mgr) {
         return SC_SOCKET_GETNAMEINFO_ERR;
     }
 
-    sc_log(mgr, SC_LL_MINIMAL, "\n[Sculpt] Server is listening on http://%s:%d\n", mgr->host_buf, mgr->addr_info.port);
+    sc_log(mgr, SC_LL_MINIMAL, "\n[Sculpt] Server is listening on http://%s:%d\n", mgr->host_buf, ntohs(mgr->sock_addr.sin_port));
 
     mgr->listening = true;
     return SC_OK;
@@ -184,6 +197,7 @@ void sc_mgr_finish(sc_conn_mgr *mgr) {
         close(mgr->epoll_fd);
         mgr->epoll_fd = -1;
     }
+
     if (mgr->epoll_initialized) {
         free(mgr->events);
         mgr->events = NULL;
