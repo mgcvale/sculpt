@@ -127,8 +127,16 @@ static int apply_port(sc_conn_mgr *mgr, sc_cfg_ptr typed_ptr) {
     sc_mgr_port_set(mgr, (unsigned short) value);
     sc_log(mgr, SC_LL_DEBUG, "Set port to %d via config file\n", value);
     return SC_OK;
-
 }
+
+static int apply_conn_timeout(sc_conn_mgr *mgr, sc_cfg_ptr typed_ptr) {
+    return apply_generic_int(mgr, typed_ptr, "connection timeout", sc_mgr_conn_timeout_set);    
+}
+
+static int apply_conn_max_age(sc_conn_mgr *mgr, sc_cfg_ptr typed_ptr) {
+    return apply_generic_int(mgr, typed_ptr, "connection max age", sc_mgr_conn_max_age_set);    
+}
+
 
 const struct _config_entry config_registry[] = {
     { "log_level", TYPE_INT, apply_log_level },
@@ -137,7 +145,9 @@ const struct _config_entry config_registry[] = {
     { "conn_recycling", TYPE_BOOL, apply_conn_recycling },
     { "conn_pool_size", TYPE_INT, apply_conn_pool_size },
     { "address", TYPE_STR, apply_addr },
-    { "port", TYPE_INT, apply_port }
+    { "port", TYPE_INT, apply_port },
+    { "conn_timeout", TYPE_INT, apply_conn_timeout },
+    { "conn_max_age", TYPE_INT, apply_conn_max_age }
 };
 
 static int parse_config_value(sc_cfg_type type, char *val_buf, char *str_result, int* int_result, bool *bool_result, size_t str_result_size, size_t curr_line) {
@@ -241,6 +251,9 @@ static int parse_line(char *buf, size_t buf_size, char *key_buf, size_t key_buf_
 int sc_mgr_config_apply(sc_conn_mgr *mgr, char *filepath) {
     FPRINTF_RETURN_ERROR_IF(!mgr || !mgr->mgr_initialized, SC_BAD_STATE_ERR, "[Sculpt] Detected bad state during config loading (sc_conn_mgr is NULL or unitialized)\n");
     FPRINTF_RETURN_ERROR_IF(filepath == NULL, SC_BAD_ARGUMENTS_ERR, "Config filepath can't be NULL\n");
+    if (mgr->epoll_initialized || mgr->pool_initialized || mgr->listening) {
+        fprintf(stderr, "[Sculpt] [W] It seems some sculpt components were already started/initialized before you tried to load configs. It is reccomended to load the configs *before* initializing anything, as most configs can't be changed after initialization. Some configs may not be properly applied");
+    }
     FILE *fptr;
 
     fptr = fopen(filepath, "r");

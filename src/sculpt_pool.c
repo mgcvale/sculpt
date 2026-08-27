@@ -44,9 +44,6 @@ int sc_mgr_conn_pool_init(sc_conn_mgr *mgr) {
     mgr->conn_pool[mgr->conn_pool_size- 1].next = NULL;
     mgr->conn_pool[mgr->conn_pool_size - 1].state = CONN_IDLE;
 
-    mgr->conn_timeout = SC_DEFAULT_CONN_TIMEOUT;
-    mgr->conn_max_age = SC_DEFAULT_CONN_MAX_AGE;
-
     mgr->pool_initialized = true;
     return SC_OK;
 }

@@ -219,6 +219,8 @@ void sc_mgr_conn_recycling_set(sc_conn_mgr *mgr, int recycle);
 void sc_mgr_conn_pool_size_set(sc_conn_mgr *mgr, int pool_size);
 void sc_mgr_addr_set(sc_conn_mgr *mgr, const char *addr);
 void sc_mgr_port_set(sc_conn_mgr *mgr, unsigned short port);
+void sc_mgr_conn_timeout_set(sc_conn_mgr *mgr, int time);
+void sc_mgr_conn_max_age_set(sc_conn_mgr *mgr, int time);
 
 void sc_mgr_finish(sc_conn_mgr *mgr);
 void sc_mgr_conn_pool_destroy(sc_conn_mgr *mgr);

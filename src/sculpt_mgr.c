@@ -34,6 +34,8 @@ sc_conn_mgr *sc_mgr_create(int *err) {
     mgr->recycle_conns = true;
     mgr->protocol = SC_PROTOCOL_HTTP;
     mgr->conn_pool_size = SC_DEFAULT_CONN_POOL_SIZE;
+    mgr->conn_max_age = SC_DEFAULT_CONN_MAX_AGE;
+    mgr->conn_timeout = SC_DEFAULT_CONN_TIMEOUT;
 
     mgr->fd = socket(AF_INET, SOCK_STREAM, 0);
     if (mgr->fd < 0) {
@@ -76,14 +78,17 @@ static char *ll_to_str(int ll) {
 
 void sc_mgr_state_log(sc_conn_mgr *mgr, FILE *file) {
     const char *format = ""
-        "\n\n[SCULPT STATE LOG]\n"
+        "\n\n[Sculpt] [STATE LOG]\n"
         "\tlog level: %s\n"
         "\tbacklog size: %zu\n"
         "\tepoll max events: %zu\n"
         "\trecycle conns: %s\n"
         "\tmax connection pool capacity: %zu\n"
-        "\tmax connection idle time before closing: %zus\n"
-        "\tprotocol: %s\n\n";
+        "\tmax connection idle time: %zus\n"
+        "\tmax connection age: %zus\n"
+        "\tprotocol: %s\n"
+        "\turl: %s\n"
+        "\tport: %d\n\n";
     fprintf(file, format,
             ll_to_str(mgr->ll),
             mgr->backlog,
@@ -91,7 +96,10 @@ void sc_mgr_state_log(sc_conn_mgr *mgr, FILE *file) {
             mgr->recycle_conns ? "true" : "false",
             mgr->conn_pool_size,
             mgr->conn_timeout,
-            mgr->protocol == SC_PROTOCOL_HTTP ? "http" : "custom"
+            mgr->conn_max_age,
+            mgr->protocol == SC_PROTOCOL_HTTP ? "http" : "custom",
+            mgr->host_buf,
+            ntohs(mgr->sock_addr.sin_port)
         );
 }
 
@@ -132,7 +140,11 @@ void sc_mgr_addr_set(sc_conn_mgr *mgr, const char *addr) {
         return;
     }
 
-    if (inet_pton(AF_INET, addr, &mgr->sock_addr.sin_addr) <= 0) {
+    // hardcoded localhost support is acceptable here; we don't need (and don't want) to run
+    // a dns lookup only to set the address.
+    const char *target = (strcmp(addr, "localhost") == 0) ? "127.0.0.1" : addr;
+
+    if (inet_pton(AF_INET, target, &mgr->sock_addr.sin_addr) <= 0) {
         sc_error_log(mgr, SC_LL_MINIMAL, "[W] The address provided `%s` provided is invalid. Thus, the address wasn't changed.\n", addr);
     }
 }
@@ -144,6 +156,16 @@ void sc_mgr_port_set(sc_conn_mgr *mgr, unsigned short port) {
     }
 
     mgr->sock_addr.sin_port = htons(port);
+}
+
+void sc_mgr_conn_timeout_set(sc_conn_mgr *mgr, int time) {
+    // connection timeout can be set even after initialization, since it is always checked at runtime
+    mgr->conn_timeout = time;
+}
+
+void sc_mgr_conn_max_age_set(sc_conn_mgr *mgr, int time) {
+    // same thing as conn_timeout: can be set anywhere in time
+    mgr->conn_max_age = time;
 }
 
 int sc_mgr_listen(sc_conn_mgr *mgr) {
@@ -160,7 +182,7 @@ int sc_mgr_listen(sc_conn_mgr *mgr) {
         return SC_SOCKET_LISTEN_ERR;
     }
 
-    printf("Binding to: %s:%d\n", inet_ntoa(mgr->sock_addr.sin_addr), ntohs(mgr->sock_addr.sin_port));
+    printf("[Sculpt] Binding to: %s:%d\n", inet_ntoa(mgr->sock_addr.sin_addr), ntohs(mgr->sock_addr.sin_port));
     int rc = getnameinfo((struct sockaddr *)&mgr->sock_addr, sizeof(mgr->sock_addr),
                         mgr->host_buf, sizeof(mgr->host_buf),
                         mgr->service_buf, sizeof(mgr->service_buf), 0);
@@ -211,7 +233,7 @@ void sc_mgr_finish(sc_conn_mgr *mgr) {
         close(mgr->fd);
         mgr->fd = -1;
     }
-    sc_log(mgr, SC_LL_DEBUG, "[Sculpt]freed server socket\n");
+    sc_log(mgr, SC_LL_DEBUG, "[Sculpt] freed server socket\n");
     
 
     // free endpoints list
@@ -247,7 +269,7 @@ int sc_mgr_bind_hard(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_h
 
 int sc_mgr_bind_soft(sc_conn_mgr *mgr, const char *endpoint, void (*f)(int, sc_http_msg, sc_headers*, void*)) {
     mgr->endpoints = _endpoint_add(mgr->endpoints, endpoint, true, f);
-    sc_log(mgr, SC_LL_DEBUG, "[Sculpt]Endpoint added: %s", mgr->endpoints->val.buf);
+    sc_log(mgr, SC_LL_DEBUG, "[Sculpt] Endpoint added: %s", mgr->endpoints->val.buf);
     if (mgr->endpoints == NULL) {
         return SC_MALLOC_ERR;
     }
