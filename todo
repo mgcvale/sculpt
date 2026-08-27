@@ -2,7 +2,6 @@
 - Add Integration & memory leak tests
 - Fix HTTP header parsing bugs & make parsing more robust
 - Add more sc_easy_* helpers
-- Add configurability through a config file instead of global constants in SCULPT.H
 - Add configurability for HTTP Header parsing (parse with larger blocks for speed, even if that eats into the http body a bit)
 - Add a sc_mgr_init_all() function that calls epoll's init and conn_pool's init
 - make setters return int error codes for more consistent logging
