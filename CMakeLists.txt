@@ -22,4 +22,7 @@ target_link_libraries(testapp PRIVATE sculpt)
 add_executable(custom_protocol_example examples/custom_protocol/app.c)
 target_link_libraries(custom_protocol_example PRIVATE sculpt)
 
+add_executable(test_server test/test_server.c)
+target_link_libraries(test_server PRIVATE sculpt)
+
 install(TARGETS testapp RUNTIME DESTINATION bin)
