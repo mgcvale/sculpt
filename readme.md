@@ -29,6 +29,23 @@ make
 ./testapp
 ```
 
+## Tests
+
+### Integration tests
+
+To run the integration tests, start by building the test server:
+
+```
+cmake -S . -B test/build -DCMAKE_BUILD_TYPE=Debug
+cmake --build test/build --target test_server
+```
+
+And then run the tests with pytest:
+
+```
+source venv/bin/activate
+pytest test/integration -v
+```
 ## Contributing
 
 There are several ways to contribute to Sculpt. You can create your own fork, help with issues or with new features.
